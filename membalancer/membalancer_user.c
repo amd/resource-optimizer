@@ -75,10 +75,16 @@ bool tracer_physical_mode = true;
 static char cmd_args[]  = "f:P:p:r:m:M:v:U:T:D:L:B:tuhcbHV";
 static int ibs_fetch_device = -1;
 static int ibs_op_device    = -1;
-static int ibs_fetch_config = 57;
-static int ibs_op_config    = 19;
+#define FETCH_CONFIG        57
+#define FETCH_CONFIG_L3MISS 59
+#define OP_CONFIG           19
+#define OP_CONFIG_L3MISS    16
+
+static int ibs_fetch_config;
+static int ibs_op_config;
 static unsigned int cpu_nodes;
 static pid_t mypid;
+bool l3miss = false;
 
 #define ADDITIONAL_PROGRAMS 2
 
@@ -370,13 +376,16 @@ static int ibs_fetch_sampling_begin(int freq, struct bpf_program *prog,
 			links[i] = NULL;
 			continue;
 		}
+
 		pmu_fd = sys_perf_event_open(&ibs_fetch, -1, i, -1, 0);
 		if (pmu_fd < 0) {
 			fprintf(stderr, "Cannot arm IBS FETCH sampling\n");
 			return 1;
 		}
+
 		links[i] = bpf_program__attach_perf_event(prog, pmu_fd);
 		if (libbpf_get_error(links[i])) {
+
 			fprintf(stderr, "ERROR: Attach perf event\n");
 			links[i] = NULL;
 			close(pmu_fd);
@@ -394,6 +403,13 @@ static void ibs_sampling_end(struct bpf_link *links[])
 	for (i = 0; i < nr_cpus; i++)
 		bpf_link__destroy(links[i]);
 }
+
+static void ibs_fetchop_config_set(void)
+{
+	ibs_fetch_config = (l3miss) ? FETCH_CONFIG_L3MISS : FETCH_CONFIG;
+	ibs_op_config    = (l3miss) ? OP_CONFIG_L3MISS : OP_CONFIG;
+}
+
 
 int ibs_op_sampling_begin(int freq, struct bpf_program *prog,
 				struct bpf_link *links[])
@@ -433,11 +449,13 @@ int ibs_op_sampling_begin(int freq, struct bpf_program *prog,
 			links[i] = NULL;
 			continue;
 		}
+
 		pmu_fd = sys_perf_event_open(&ibs_op, -1, i, -1, 0);
 		if (pmu_fd < 0) {
 			fprintf(stderr, "Cannot arm IBS OP sampling\n");
 			return 1;
 		}
+
 		links[i] = bpf_program__attach_perf_event(prog, pmu_fd);
 		if (libbpf_get_error(links[i])) {
 			fprintf(stderr, "ERROR: Attach perf event\n");
@@ -638,7 +656,7 @@ static void * page_move_function(void *arg)
 {
 	int queue = (int)(long)arg;
 	int count = 0;
-	long err;
+	int err __attribute__((unused));
 	struct page_mover *mover;
 	struct page_list *page;
 	struct timeval start, end;
@@ -1736,6 +1754,8 @@ int main(int argc, char **argv)
 		usage();
 		return 1;
 	}
+
+	ibs_fetchop_config_set();
 
 	fill_numa_table();
 	if (tier_mode) {

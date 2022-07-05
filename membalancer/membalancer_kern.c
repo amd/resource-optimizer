@@ -16,7 +16,7 @@
 #include <uapi/linux/socket.h>
 #include <bpf/bpf_endian.h>
 #include <linux/perf_event.h>
-
+#include <bpf/bpf_helpers.h>
 #include "membalancer.h"
 
 struct {
@@ -258,6 +258,7 @@ int ibs_fetch_event(struct bpf_perf_event_data *ctx)
 
 	if (IBS_KERN_SAMPLE(ip))
 		return 0;
+
 #ifdef MEMB_USE_VA
 	key = init_val.fetch_regs[IBS_FETCH_LINADDR];
 #else
@@ -322,6 +323,7 @@ int ibs_op_event(struct bpf_perf_event_data *ctx)
 	ip = PT_REGS_IP(&ctx->regs);
 	if (IBS_KERN_SAMPLE(ip))
 		return 0;
+
 
 	/* Collect samples from IBS Fetch registers */
 	kern_ctx = (struct bpf_perf_event_data_kern *)ctx;

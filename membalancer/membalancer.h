@@ -94,7 +94,12 @@ struct sched_wakeup {
         char  comm[COMM_LEN];
         pid_t pid;
         int   prio;
+#ifndef KERNEL_VERSION
+#define KERNEL_VERSION(a, b, c) (((a) << 16) + ((b) << 8) + ((c) > 255 ? 255 : (c)))
+#endif
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,19,0)
         int   success;
+#endif
         int   target_cpu;
 };
 

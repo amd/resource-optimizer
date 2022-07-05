@@ -1,4 +1,4 @@
-KDIR ?= /home/skurichi/fedora
+KDIR ?= /usr/src/linux-5.19-rc4
 LIBBPF = /home/skurichi/libbpf
 CLANG ?= clang
 LLC ?= llc
@@ -20,6 +20,7 @@ BPF_INCLUDE := -I. \
 	-I${KDIR}/tools/perf \
 	-I${KDIR}/tools/lib \
 	-I${KDIR}/tools/testing/selftests/bpf/ \
+	-I${LIBBPF}/src \
 	-I${LIBBPF}/include
 
 CLANG_FLAGS = -I. \
@@ -33,6 +34,7 @@ CLANG_FLAGS = -I. \
 	-I$(KDIR)/arch/$(ARCH)/include/uapi \
 	-I$(KDIR)/arch/$(ARCH)/include/generated/uapi \
 	-I$(KDIR)/tools/testing/selftests/bpf/ \
+	-I${LIBBPF}/src \
 	-D__KERNEL__ -D__BPF_TRACING__ -Wno-unused-value -Wno-pointer-sign \
 	-DCC_USING_FENTRY \
 	-D__TARGET_ARCH_$(ARCH) -Wno-compare-distinct-pointer-types \
@@ -41,7 +43,7 @@ CLANG_FLAGS = -I. \
 	-Wno-unknown-warning-option  \
 	-g -O2 -emit-llvm
 
-all:   $(BIN_KERN) ${BIN_LOAD} \
+all:   $(BIN_KERN) \
        ${BIN_TRACER} ${BIN_NUMA} ${BIN_TIER} \
        ${HEAP} ${GETPADDR} ${BIN_USER}
 
@@ -49,10 +51,7 @@ all:   $(BIN_KERN) ${BIN_LOAD} \
 	$(CLANG) $(CLANG_FLAGS) -c $< -o - -Wall| \
 		$(LLC) -march=bpf -mcpu=$(CPU) -filetype=obj -o $@
 
-bpf_load.o: ${KDIR}/samples/bpf/bpf_load.c 
-	$(CLANG) -c $<  ${BPF_INCLUDE}
-
-getaddr.o: getaddr.c
+getpaddr.o: getpaddr.c
 	$(CLANG) -c $<  ${BPF_INCLUDE}
 
 %_numa.o: %_numa.c
@@ -67,7 +66,7 @@ heap.o: heap.c
 	$(CLANG) -c $<  ${BPF_INCLUDE}
 
 %_user.o: %_user.c
-	$(CLANG) ./bpf_load.o \
+	$(CLANG) \
 	./membalancer_numa.o \
 	./membalancer_tier.o \
         ./membalancer_tracer.o \
