@@ -11,7 +11,7 @@
 #define PHYSADDR_BYTES 8
 
 /* If bit 63 is set, then it is a valid physical address */
-#define IS_PHYSADDR_VALID(addr) (addr & ((unsigned long)1<<63)) >> 63
+#define IS_PHYSADDR_VALID(addr) (addr & ((unsigned long)1 << 63)) >> 63
 
 unsigned long get_physaddr(pid_t pid, unsigned long vaddr)
 {

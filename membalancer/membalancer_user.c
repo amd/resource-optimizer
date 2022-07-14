@@ -72,7 +72,7 @@ static int report_frequency = 1;
 static char *trace_dir;
 bool tracer_physical_mode = true;
 
-static char cmd_args[]  = "f:P:p:r:m:M:v:U:T:D:L:B:tuhcbHV";
+static char cmd_args[]  = "f:P:p:r:m:M:v:U:T:D:L:B:uhcbHVl";
 static int ibs_fetch_device = -1;
 static int ibs_op_device    = -1;
 #define FETCH_CONFIG        57
@@ -84,7 +84,7 @@ static int ibs_fetch_config;
 static int ibs_op_config;
 static unsigned int cpu_nodes;
 static pid_t mypid;
-bool l3miss = false;
+static bool l3miss = false;
 
 #define ADDITIONAL_PROGRAMS 2
 
@@ -151,17 +151,58 @@ static void * page_move_function(void *arg);
 static unsigned long upgrade_align   = 256 * PAGE_SIZE; 
 static unsigned long downgrade_align = 256 * PAGE_SIZE; 
 
-static void usage(void)
+static void usage(const char *cmd)
 {
-	printf("USAGE: cmw [-f freq] [-p <pid,..>] [-P <parent pid,..>] "
-	       "[-N <numa tier information> ] [duration]\n");
-	printf("       -P pid Parent Process ID to be tracked\n");
-	printf("       -p pid Process ID to be tracked\n");
-	printf("       -f freq    # sample frequency (Hertz), "
-	       "default %d\n", MEMB_CLOCK);
+	printf("USAGE: %s [-f freq] [-p <pid,..>] [-P <parent pid,..>] "
+			"[-u] [-h] [-H] [-V] [-l] [-M]"
+			"[-T <numa tier information> ] [-b] "
+			"[-m <percentage>] "
+			"[-v <verbose>] [-U <Upgrade size in bytes] "
+			"[-D <Downgrade size in bytes] "
+			"[duration]\n", cmd);
+	printf("       -f <freq>    # sample frequency (Hertz), default %d Hz\n",
+			MEMB_CLOCK);
+	printf("       -p <pid> Process ID to be tracked\n");
+	printf("       -P <pid> Parent Process ID to be tracked\n");
 	printf("       -u Only user space samples\n");
-	printf("       duration   #  interval in milliseconds, "
+	printf("       -h help, displays this information\n");
+	printf("       -H show histograms\n");
+	printf("       -V <level>, Verbose level\n");
+	printf("       -l Collects only l3miss IBS samples\n");
+	printf("       -m Minimum percentage of samples to be considered\n"
+			"          for processing hot pages, default %4.2lf\n",
+			min_pct);
+	printf("       -M Maximizer mode to increase "
+			"the frequency of samples' collection\n");
+	printf("        -T <tier information> where\n"
+			"         the teir information defines two or more "
+			"tiers with a tuple for \n"
+			"         each tier\n\n"
+			"        <tier_num>:"
+			" <comma seperated nodes in the tier>:\n"
+			"        <promote_pct>:<tier_num_for_promotion>:"
+			" <promotion_cap_in_bytes>:\n"
+			"        <demote_pct>:<tier_num_for_demotion>:"
+			" <deomotion_cap_in_bytes>\n"
+			"        [-<tier_num>:<...>]\n");
+	printf("       <duration> Interval in milliseconds, "
 	       "default %d\n", MEMB_INTVL);
+
+	printf("\nExamples\n\n");
+	printf("1. Example for a 3-tier memory configuration\n");
+	printf("%s -f 25 -u -P 1234 -v1 -m 0.0001 -M 1 -r 2 100 -b\n"
+	      "-T 0:0:0:0:0:1:1:0-1:1:1:0:0:1:2:0-2:2,3:5:1:0:0:0:0\n"
+	      "-H -U 1048576 -D 1048576\n", cmd);
+	printf("Where the tiers 0, 1 and 2 contain "
+		"the nodes {0}, {1}, {2, 3} respectively.\n");
+	printf("\n");
+	printf("2. Example for NUMA balancer configuration:\n");
+	printf("%s -f 25 -u -P 1234 -v1 -m 0.0001 -M 1 -r 2 100 -b\n"
+	       "-H -U 1048576 -D 1048576\n", cmd);
+	printf("\n");
+	printf("3. Example for memory access tracer or pattern analyzer\n");
+	printf("%s -f 25 -u -P 99053 -v1 -m 0.0001 -M 1 -r 2 1000 -L /tmp/ \n",
+		cmd);
 }
 
 static int get_ibs_device_type(const char *dev)
@@ -1663,9 +1704,10 @@ int main(int argc, char **argv)
 			break;
 		case 'T':
 			tier_args = optarg;
-			break;
-		case 't':
 			tier_mode = true;
+			break;
+		case 'l':
+			l3miss = true;
 			break;
 		case 'b':
 			balancer_mode = true;
@@ -1693,7 +1735,7 @@ int main(int argc, char **argv)
 			include_pids = optarg;
 			if (include_ppids) {
 				printf("Only pid or ppid, not both\n");
-				usage();
+				usage(argv[0]);
 				return -1;
 			}
 			break;
@@ -1701,7 +1743,7 @@ int main(int argc, char **argv)
 			include_ppids = optarg;
 			if (include_pids) {
 				printf("Only pid or ppid, not both\n");
-				usage();
+				usage(argv[0]);
 				return -1;
 			}
 			break;
@@ -1709,7 +1751,7 @@ int main(int argc, char **argv)
 			verbose = atoi(optarg);
 			break;
 		case 'h':
-			usage();
+			usage(argv[0]);
 			return 0;
 		case 'H':
 			histogram_format = true;
@@ -1737,13 +1779,13 @@ int main(int argc, char **argv)
 			trace_dir = optarg;
 			break;
 		default:
-			usage();
+			usage(argv[0]);
 			return -1;
 		}
 	}
 
 	if (argc - optind > 1) {
-		usage();
+		usage(argv[0]);
 		return -1;
 	}
 
@@ -1751,7 +1793,7 @@ int main(int argc, char **argv)
 		msecs = atoi(argv[optind]);
 
 	if (freq == 0 || msecs == 0) {
-		usage();
+		usage(argv[0]);
 		return 1;
 	}
 
@@ -1800,7 +1842,6 @@ int main(int argc, char **argv)
 		obj = NULL;
 		goto cleanup;
 	}
-
 
 	prog[0] = bpf_object__find_program_by_name(obj, "ibs_fetch_event");
 	if (!prog[0]) {
