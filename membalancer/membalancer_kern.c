@@ -103,14 +103,6 @@ static int check_ppid = -1;
 static volatile u64 ibs_fetches, ibs_ops;
 unsigned long __atomic_fetch_add_N(volatile u64 *ptr, u64 val, int ordering);
 
-/*
-#define ATOMIC_READ(v) __atomic_fetch_add((v), 0, __ATOMIC_SEQ_CST)
-#define ATOMIC_READ(v) __sync_fetch_and_add_N((v), 0)
-#define ATOMIC_READ(v) (*v)
-*/
-#define ATOMIC_INC(v)  __atomic_add_fetch((v), 1, __ATOMIC_SEQ_CST)
-#define ATOMIC_READ(v) atomic64_read((atomic64_t *)(v))
-
 static inline void inc_ibs_fetch_samples(void)
 {
         int key = 0;
@@ -137,6 +129,11 @@ static bool valid_pid(pid_t pid)
 
 	nilpid = -1;
 
+	/*
+	 * Parent process ID check is expensive. Hence the following code block
+	 * is invoked once to set whether ppid check is required afterwads or
+	 * not.
+	 */
 	if (unlikely(check_ppid == -1)) {
 		if (bpf_map_lookup_elem(&ppid_include, &nilpid)) {
 			check_ppid = 0;
@@ -145,6 +142,7 @@ static bool valid_pid(pid_t pid)
 		}
 	}
 
+	/* Parent process case */
 	if (check_ppid == 1) {
 		struct task_struct *task, *parent;
 		pid_t ppid;
@@ -161,12 +159,18 @@ static bool valid_pid(pid_t pid)
 		return false;
 	}
 
+	/* Check if the given pid needs to be excluded from sampling */
 	if (bpf_map_lookup_elem(&pid_exclude, &pid))
 		return false;
 
+	/* Check if the given pid needs to be sampled */
 	if (bpf_map_lookup_elem(&pid_include, &nilpid))
 		return true;
 
+	/* 
+	 * Finally, the check whether to sample every pid in the system or
+	 * not.
+	 */
 	if (bpf_map_lookup_elem(&pid_include, &pid))
 		return true;
 

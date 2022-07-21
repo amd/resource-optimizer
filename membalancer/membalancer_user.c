@@ -27,6 +27,7 @@
 #include <pthread.h>
 #include <limits.h>
 #include <sys/time.h>
+#include <signal.h>
 
 #define __USE_GNU
 #include <search.h>
@@ -55,7 +56,9 @@ typedef struct {
 
 #define MEMB_CLOCK 25 
 #define MEMB_INTVL 100
-#define MIN_IBS_SAMPLES 200 /* 5000 */ /* 200 */
+#define MIN_IBS_CLASSIC_SAMPLES 500 
+#define MIN_IBS_L3MISS_SAMPLES  50
+#define MIN_IBS_SAMPLES min_ibs_samples
 #define MIN_IBS_FETCH_SAMPLES (MIN_IBS_SAMPLES / 4)
 #define MIN_IBS_OP_SAMPLES    (MIN_IBS_SAMPLES / 4)
 #define MIN_CNT 1
@@ -71,6 +74,7 @@ static float maximizer_mode = 0.2;
 static int report_frequency = 1;
 static char *trace_dir;
 bool tracer_physical_mode = true;
+static unsigned int min_ibs_samples = MIN_IBS_CLASSIC_SAMPLES;
 
 static char cmd_args[]  = "f:P:p:r:m:M:v:U:T:D:L:B:uhcbHVl";
 static int ibs_fetch_device = -1;
@@ -85,6 +89,8 @@ static int ibs_op_config;
 static unsigned int cpu_nodes;
 static pid_t mypid;
 static bool l3miss = false;
+
+static unsigned long fetch_cnt, op_cnt, pages_migrated;
 
 #define ADDITIONAL_PROGRAMS 2
 
@@ -449,6 +455,8 @@ static void ibs_fetchop_config_set(void)
 {
 	ibs_fetch_config = (l3miss) ? FETCH_CONFIG_L3MISS : FETCH_CONFIG;
 	ibs_op_config    = (l3miss) ? OP_CONFIG_L3MISS : OP_CONFIG;
+	min_ibs_samples  = (l3miss) ? MIN_IBS_L3MISS_SAMPLES :
+			   MIN_IBS_CLASSIC_SAMPLES;
 }
 
 
@@ -740,6 +748,13 @@ static void * page_move_function(void *arg)
 				usleep(50000);
 			}
 		}
+		{
+			int i;
+			for (i = 0; i < page->pages; i++) {
+				if (page->status[i] == 0)
+					ATOMIC_INC(&pages_migrated);
+			}
+		}
 
 #ifdef DEBUG_ON	
 		assert(err >= 0);
@@ -758,6 +773,7 @@ static void * page_move_function(void *arg)
 		}	
 #endif
 		free(page);
+		pthread_mutex_lock(&mover->mtx);
 
 	} while (mover->head || !mover->stop);
 
@@ -820,6 +836,7 @@ static int get_ibs_fetch_samples(int fd,  __u64 *total_freq)
 	while (bpf_map_get_next_key(fd, &key, &next_key) == 0) {
 		bpf_map_lookup_elem(fd, &next_key, &value);
 
+		ATOMIC_INC(&fetch_cnt);
 #ifdef USE_PAGEMAP
 		paddr = get_physaddr((pid_t)value.tgid,	
 				value.fetch_regs[IBS_FETCH_LINADDR]);
@@ -851,6 +868,7 @@ static int get_ibs_fetch_samples(int fd,  __u64 *total_freq)
 			key = next_key;
 			continue;
 		}
+
 
 		fetch_samples[node][i].ip    = next_key;
 		fetch_samples[node][i].count = value.count;
@@ -1114,6 +1132,7 @@ static int get_ibs_op_samples(int fd, __u64 *total_freq)
 	while (bpf_map_get_next_key(fd, &key, &next_key) == 0) {
 		bpf_map_lookup_elem(fd, &next_key, &value);
 
+		ATOMIC_INC(&op_cnt);
 #ifdef USE_PAGEMAP
 		paddr = get_physaddr((pid_t)value.tgid,	
 				value.op_regs[IBS_DC_LINADDR]);
@@ -1662,6 +1681,14 @@ static void ibs_process_samples(struct ibs_sample_worker *worker,
 	}
 }
 
+static void interrupt_signal(int sig)
+{
+	printf("MODE : %-13s Fetch_Samples :%-10ld OP_Samples :%-10ld Migrated_Pages :%-10ld\n",
+		(l3miss) ? "IBS_L3MISS":"IBS_CLASSIC",fetch_cnt, op_cnt, pages_migrated);
+	exit(0);
+}
+
+
 int main(int argc, char **argv)
 {
 	int base_page_size;
@@ -1927,6 +1954,8 @@ int main(int argc, char **argv)
 	fetch_cnt_new = 0;
 	op_cnt_old = 0;
 	op_cnt_new = 0;
+
+	signal(SIGINT, interrupt_signal);
 
 	while (!err) {
 

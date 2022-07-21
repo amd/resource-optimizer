@@ -103,4 +103,19 @@ struct sched_wakeup {
         int   target_cpu;
 };
 
+#ifdef __KERNEL__ 
+/*
+#define ATOMIC_READ(v) __atomic_fetch_add((v), 0, __ATOMIC_SEQ_CST)
+#define ATOMIC_READ(v) __sync_fetch_and_add_N((v), 0)
+#define ATOMIC_READ(v) (*v)
+*/
+#define ATOMIC_INC(v)  __atomic_add_fetch((v), 1, __ATOMIC_SEQ_CST)
+#define ATOMIC_READ(v) atomic64_read((atomic64_t *)(v))
+#else
+#define ATOMIC_READ(v) __sync_fetch_and_add((v), 0)
+#define ATOMIC_INC(v) __sync_fetch_and_add((v), 1)
+#define ATOMIC_ADD(v, val) __sync_fetch_and_add((v), val)
+#endif
+
+
 #endif
