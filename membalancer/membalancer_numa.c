@@ -365,7 +365,6 @@ void process_ibs_op_samples_numa(struct bst_node **rootpp,
 
                         if (!op_samples[node][i].count)
                                 continue;
-
                         if (--k < 0)  {
                                 op_samples[node][i].count = 0;
                                 continue;

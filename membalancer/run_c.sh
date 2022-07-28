@@ -1,4 +1,4 @@
-#/bin/bash
+#!/bin/bash
 
 pid=-1
 if [[ "$#" -ge 1 ]]

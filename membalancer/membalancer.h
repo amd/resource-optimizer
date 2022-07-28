@@ -103,6 +103,16 @@ struct sched_wakeup {
         int   target_cpu;
 };
 
+struct sched_exit {
+        short type;
+        char  flags;
+        char  preempt_count;
+        int   common_pid;
+        char  comm[COMM_LEN];
+        pid_t pid;
+        int   prio;
+};
+
 #ifdef __KERNEL__ 
 /*
 #define ATOMIC_READ(v) __atomic_fetch_add((v), 0, __ATOMIC_SEQ_CST)
@@ -112,9 +122,27 @@ struct sched_wakeup {
 #define ATOMIC_INC(v)  __atomic_add_fetch((v), 1, __ATOMIC_SEQ_CST)
 #define ATOMIC_READ(v) atomic64_read((atomic64_t *)(v))
 #else
+/*
 #define ATOMIC_READ(v) __sync_fetch_and_add((v), 0)
 #define ATOMIC_INC(v) __sync_fetch_and_add((v), 1)
 #define ATOMIC_ADD(v, val) __sync_fetch_and_add((v), val)
+*/
+#ifndef atomic_t
+typedef struct {
+        volatile int counter;
+} atomic_t;
+
+typedef struct {
+        volatile long counter;
+} atomic64_t;
+
+#define atomic64_read(v) __sync_fetch_and_add(&(v)->counter, 0)
+#define atomic64_add(v, value) __sync_fetch_and_add(&(v)->counter, value)
+#define atomic64_inc(v) atomic64_add(v, 1)
+#define atomic64_sub(v, value) __sync_fetch_and_sub(&(v)->counter, value)
+#define atomic64_dec(v) atomic64_sub(v, 1)
+#define atomic_cmxchg(v, cur, new) __sync_val_compare_and_swap((v), cur, new)
+#endif
 #endif
 
 

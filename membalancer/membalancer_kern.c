@@ -430,4 +430,21 @@ int sched_wakeup(struct sched_wakeup *wakeup)
 	return 0;
 }
 
+
+/*
+ * Function/Callback to perform the cleanups upon process termination.
+ */
+SEC("tracepoint/sched/sched_process_exit")
+int sched_process_exit(struct sched_exit *exit)
+{
+        pid_t pid = exit->pid;
+
+        if (!valid_pid(pid))
+                return 0;
+
+        bpf_map_delete_elem(&pid_node_map, &pid);
+
+        return 0;
+}
+
 char _license[] SEC("license") = "GPL";

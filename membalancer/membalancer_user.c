@@ -28,21 +28,12 @@
 #include <limits.h>
 #include <sys/time.h>
 #include <signal.h>
+#include <sys/wait.h>
 
 #define __USE_GNU
 #include <search.h>
 typedef __u32 u32;
 typedef __u64 u64;
-#ifndef atomic_t
-typedef struct {
-        volatile int counter;
-} atomic_t;
-
-typedef struct {
-        volatile long counter;
-} atomic64_t;
-
-#endif
 
 #include "membalancer.h"
 #include "membalancer_utils.h"
@@ -56,8 +47,8 @@ typedef struct {
 
 #define MEMB_CLOCK 25 
 #define MEMB_INTVL 100
-#define MIN_IBS_CLASSIC_SAMPLES 500 
-#define MIN_IBS_L3MISS_SAMPLES  50
+#define MIN_IBS_CLASSIC_SAMPLES 1000
+#define MIN_IBS_L3MISS_SAMPLES  5000
 #define MIN_IBS_SAMPLES min_ibs_samples
 #define MIN_IBS_FETCH_SAMPLES (MIN_IBS_SAMPLES / 4)
 #define MIN_IBS_OP_SAMPLES    (MIN_IBS_SAMPLES / 4)
@@ -75,8 +66,9 @@ static int report_frequency = 1;
 static char *trace_dir;
 bool tracer_physical_mode = true;
 static unsigned int min_ibs_samples = MIN_IBS_CLASSIC_SAMPLES;
+static int migration_timeout_sec = 5;
 
-static char cmd_args[]  = "f:P:p:r:m:M:v:U:T:D:L:B:uhcbHVl";
+static char cmd_args[]  = "f:P:p:r:m:M:v:U:T:t:D:L:B:uhcbHVl";
 static int ibs_fetch_device = -1;
 static int ibs_op_device    = -1;
 #define FETCH_CONFIG        57
@@ -90,15 +82,16 @@ static unsigned int cpu_nodes;
 static pid_t mypid;
 static bool l3miss = false;
 
-static unsigned long fetch_cnt, op_cnt, pages_migrated;
+static atomic64_t fetch_cnt, op_cnt, pages_migrated;
 
-#define ADDITIONAL_PROGRAMS 2
+#define ADDITIONAL_PROGRAMS 3
 
 static struct bpf_program *additional_programs[ADDITIONAL_PROGRAMS];
 static int addtional_program_count;
 static struct bpf_link *additional_bpflinks[ADDITIONAL_PROGRAMS];
 static char * additional_programs_name[ADDITIONAL_PROGRAMS] = {
 	"sched_wakeup",
+	"sched_process_exit",
 	NULL,
 };
 
@@ -146,6 +139,7 @@ struct ibs_sample_worker {
 
 static struct page_mover page_mover[PAGE_MOVERS];
 static struct ibs_sample_worker ibs_worker[IBS_SAMPLE_WORKERS];
+static atomic64_t ibs_workers;
 static atomic64_t ibs_pending_fetch_samples;
 static atomic64_t ibs_pending_op_samples;
 
@@ -447,8 +441,13 @@ static void ibs_sampling_end(struct bpf_link *links[])
 {
 	int i;
 
-	for (i = 0; i < nr_cpus; i++)
+	for (i = 0; i < nr_cpus; i++) {
+		if (links[i] == NULL)
+			continue;
+
 		bpf_link__destroy(links[i]);
+		links[i] = NULL;
+	}
 }
 
 static void ibs_fetchop_config_set(void)
@@ -585,11 +584,6 @@ static int fill_cpu_nodes(struct bpf_object *obj)
 
 	return node;
 }
-
-#define atomic64_read(v) __sync_fetch_and_add(&(v)->counter, 0)
-#define atomic64_add(v, value) __sync_fetch_and_add(&(v)->counter, value)
-#define atomic64_sub(v, value) __sync_fetch_and_sub(&(v)->counter, value)
-#define atomic_cmxchg(v, cur, new) __sync_val_compare_and_swap((v), cur, new)
 
 static int init_page_mover(void)
 {
@@ -752,7 +746,7 @@ static void * page_move_function(void *arg)
 			int i;
 			for (i = 0; i < page->pages; i++) {
 				if (page->status[i] == 0)
-					ATOMIC_INC(&pages_migrated);
+					atomic64_inc(&pages_migrated);
 			}
 		}
 
@@ -836,7 +830,7 @@ static int get_ibs_fetch_samples(int fd,  __u64 *total_freq)
 	while (bpf_map_get_next_key(fd, &key, &next_key) == 0) {
 		bpf_map_lookup_elem(fd, &next_key, &value);
 
-		ATOMIC_INC(&fetch_cnt);
+		atomic64_inc(&fetch_cnt);
 #ifdef USE_PAGEMAP
 		paddr = get_physaddr((pid_t)value.tgid,	
 				value.fetch_regs[IBS_FETCH_LINADDR]);
@@ -914,6 +908,32 @@ static int get_ibs_fetch_samples(int fd,  __u64 *total_freq)
 	*total_freq = total;
 
 	return max;
+}
+
+static void cleanup_fetch_samples(int fd)
+{
+	__u64 key, next_key;
+	struct value_fetch value;
+	int i, j;
+
+	for (i = 0; i < max_nodes; i++) {
+		fetch_samples_max[i] = 0;
+		fetch_samples_cnt[i] = 0;
+	}
+
+	/* Process fetch samples from the map*/
+	key = 0;
+	i = 0;
+	while (bpf_map_get_next_key(fd, &key, &next_key) == 0) {
+		bpf_map_lookup_elem(fd, &next_key, &value);
+
+		bpf_map_delete_elem(fd, &next_key);
+		key = next_key;
+
+		for (j = 0; j < max_nodes; j++)
+			fetch_samples[j][i].count = 0;
+
+	}
 }
 
 #define MAX_BST_PAGES 8192
@@ -1132,7 +1152,7 @@ static int get_ibs_op_samples(int fd, __u64 *total_freq)
 	while (bpf_map_get_next_key(fd, &key, &next_key) == 0) {
 		bpf_map_lookup_elem(fd, &next_key, &value);
 
-		ATOMIC_INC(&op_cnt);
+		atomic64_inc(&op_cnt);
 #ifdef USE_PAGEMAP
 		paddr = get_physaddr((pid_t)value.tgid,	
 				value.op_regs[IBS_DC_LINADDR]);
@@ -1217,6 +1237,26 @@ static int get_ibs_op_samples(int fd, __u64 *total_freq)
 	*total_freq = total;
 
 	return max;
+}
+
+static void cleanup_op_samples(int fd)
+{
+	__u64 key, next_key;
+	struct value_op value;
+	int i, j;
+
+	/* Process op samples from the map*/
+	key = 0;
+	 i = 0;
+	while (bpf_map_get_next_key(fd, &key, &next_key) == 0) {
+		bpf_map_lookup_elem(fd, &next_key, &value);
+		key = next_key;
+		bpf_map_delete_elem(fd, &next_key);
+
+
+		for (j = 0; j < max_nodes; j++)
+			op_samples[j][i].count = 0;
+	}
 }
 
 static void process_ibs_op_samples(struct bst_node **rootpp,
@@ -1584,13 +1624,18 @@ static bool ibs_pending_samples(void)
 	
 	fetch_samples = atomic64_read(&ibs_pending_fetch_samples);
 	op_samples = atomic64_read(&ibs_pending_op_samples);
-	
+
+	/*	
 	if (fetch_samples >= MIN_IBS_SAMPLES &&
 	    op_samples >= MIN_IBS_OP_SAMPLES)
 		return true;
 
 	if (op_samples >= MIN_IBS_SAMPLES &&
 	    fetch_samples >= MIN_IBS_FETCH_SAMPLES)
+		return true;
+	*/
+	if ((fetch_samples >= MIN_IBS_SAMPLES) ||
+	    (op_samples >= MIN_IBS_SAMPLES))
 		return true;
 
 	return false;
@@ -1601,6 +1646,7 @@ static void * ibs_sample_worker_function(void *arg)
 	struct ibs_sample_worker *worker = arg;
 	int counter = 0;
 
+	atomic64_inc(&ibs_workers);
 	pthread_mutex_lock(&worker->mtx);
 	do {
 		while (!ibs_pending_samples() && !worker->stop) {
@@ -1625,10 +1671,34 @@ static void * ibs_sample_worker_function(void *arg)
 		pthread_mutex_lock(&worker->mtx);
 
 	} while(1);
-
 	pthread_mutex_unlock(&worker->mtx);
 
+	atomic64_dec(&ibs_workers);
+
+	pthread_mutex_lock(&worker[0].mtx);
+	pthread_cond_signal(&worker[0].cv);
+	pthread_mutex_unlock(&worker[0].mtx);
+
+
 	return NULL;
+}
+
+static void deinit_ibs_sample_worker(int workers)
+{
+	int i = 0;
+
+	for (i = 0; i < workers; i++) {
+		pthread_mutex_lock(&ibs_worker[i].mtx);
+		ibs_worker[i].stop = 1;
+		pthread_cond_signal(&ibs_worker[i].cv);
+		pthread_mutex_unlock(&ibs_worker[i].mtx);
+	}
+
+	while (atomic64_read(&ibs_workers) > 0) {
+		pthread_mutex_lock(&ibs_worker[0].mtx);
+		pthread_cond_wait(&ibs_worker[0].cv, &ibs_worker[0].mtx);
+		pthread_mutex_unlock(&ibs_worker[0].mtx);
+	}
 }
 
 static int init_ibs_sample_worker(int *map_fd,
@@ -1656,14 +1726,9 @@ static int init_ibs_sample_worker(int *map_fd,
 	if (i == IBS_SAMPLE_WORKERS)
 		return 0;
 
-	while (i >= 0) {
-		pthread_mutex_lock(&ibs_worker[i].mtx);
-		ibs_worker[i].stop = 1;
-		pthread_cond_signal(&ibs_worker[i].cv);
-		pthread_mutex_unlock(&ibs_worker[i].mtx);
-	}
+	deinit_ibs_sample_worker(i);
 
-	return 0;
+	return -1;
 }
 
 static void ibs_process_samples(struct ibs_sample_worker *worker,
@@ -1681,33 +1746,338 @@ static void ibs_process_samples(struct ibs_sample_worker *worker,
 	}
 }
 
-static void interrupt_signal(int sig)
+static void print_migration_status(void)
 {
 	printf("MODE : %-13s Fetch_Samples :%-10ld OP_Samples :%-10ld Migrated_Pages :%-10ld\n",
-		(l3miss) ? "IBS_L3MISS":"IBS_CLASSIC",fetch_cnt, op_cnt, pages_migrated);
+		(l3miss) ? "IBS_L3MISS":"IBS_CLASSIC",
+		atomic64_read(&fetch_cnt),
+		atomic64_read(&op_cnt),
+		atomic64_read(&pages_migrated));
+}
+
+static void interrupt_signal(int sig)
+{
+	print_migration_status();
 	exit(0);
 }
 
-
-int main(int argc, char **argv)
+/*
+ * pages_migration_status:
+ * Returns 0 if migrations are happening
+ * Returns ETIMEDOUT if migrations stops for the last N seconds;
+ */
+static int pages_migration_status(int msecs,
+				  unsigned long *ibs_samples_old,
+				  unsigned long *pages_migrated_old,
+				  int           *no_migrations)
 {
-	int base_page_size;
-	int opt;
-	int freq = MEMB_CLOCK;
-	int msecs = MEMB_INTVL, msecs_nap;
+	int limit = migration_timeout_sec * 1000 / msecs;
+
+	if (!balancer_mode)
+		return 0;
+	/*
+	if (atomic64_read(&fetch_cnt) + atomic_read(&op_cnt) <=
+	     *ibs_samples_old) {
+		return 0;
+	}
+
+	*ibs_samples_old = atomic64_read(&fetch_cnt) + atomic64_read(&op_cnt);
+	*/
+	if (atomic64_read(&op_cnt) <=
+	     *ibs_samples_old) {
+		return 0;
+	}
+
+	*ibs_samples_old = atomic64_read(&op_cnt);
+	if (atomic64_read(&pages_migrated) <= *pages_migrated_old) {
+		++*no_migrations;
+		if (*no_migrations >= limit)
+			return ETIMEDOUT;
+	} else {
+		*no_migrations = 0;
+	}
+	*pages_migrated_old = atomic64_read(&pages_migrated);
+
+	return 0;
+}
+
+static void balancer_cleanup(int fetch_fd, int op_fd)
+{
+	cleanup_fetch_samples(fetch_fd);
+	cleanup_op_samples(op_fd);
+}
+
+static int balancer_function_int(const char *kernobj, int freq, int msecs)
+{
+	int msecs_nap;
 	int err = -1;
 	struct bpf_object *obj = NULL;
 	struct bpf_program *prog[3] = {NULL, NULL, NULL};
 	struct bpf_link **fetch_links = NULL, **op_links = NULL;
 	struct bpf_link **perf_links = NULL;
 	char filename[256];
-        struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
 	int map_fd[MAX_MAPS];
 	char *include_pids = NULL;
 	char *include_ppids = NULL;
 	unsigned long fetch_cnt, op_cnt;
 	unsigned long fetch_cnt_old, op_cnt_old;
 	unsigned long fetch_cnt_new, op_cnt_new;
+	unsigned long ibs_samples_old = 0, pages_migrated_old = 0;
+	int no_migrations = 0;
+
+	nr_cpus = sysconf(_SC_NPROCESSORS_ONLN);
+	fetch_links = calloc(nr_cpus, sizeof(struct bpf_link *));
+	if (!fetch_links) {
+		fprintf(stderr, "ERROR: malloc of links\n");
+		goto cleanup;
+	}
+
+	op_links = calloc(nr_cpus, sizeof(struct bpf_link *));
+	if (!op_links) {
+		fprintf(stderr, "ERROR: malloc of links\n");
+		goto cleanup;
+	}
+
+	perf_links = calloc(nr_cpus, sizeof(struct bpf_link *));
+	if (!perf_links) {
+		fprintf(stderr, "ERROR: malloc of links\n");
+		goto cleanup;
+	}
+
+	snprintf(filename, sizeof(filename), "%s_kern.o", kernobj);
+	obj = bpf_object__open_file(filename, NULL);
+	if (libbpf_get_error(obj)) {
+		fprintf(stderr, "ERROR: opening BPF object file failed\n");
+		obj = NULL;
+		goto cleanup;
+	}
+
+	prog[0] = bpf_object__find_program_by_name(obj, "ibs_fetch_event");
+	if (!prog[0]) {
+		fprintf(stderr, "BPF cannot find ibs_trace_event program\n");
+		goto cleanup;
+	}
+
+	prog[1] = bpf_object__find_program_by_name(obj, "ibs_op_event");
+	if (!prog[1]) {
+		fprintf(stderr, "BPF cannot find ibs_op_event program\n");
+		goto cleanup;
+	}
+
+	/* load BPF program */
+	if (bpf_object__load(obj)) {
+		fprintf(stderr, "ERROR: loading BPF object file failed\n");
+		goto cleanup;
+	}
+
+	cpu_nodes = fill_cpu_nodes(obj);
+	if (cpu_nodes <= 0)
+		goto cleanup;
+
+	if (process_include_pids(obj, include_pids, false))
+		goto cleanup;
+
+	if (process_include_pids(obj, include_ppids, true))
+		goto cleanup;
+
+	map_fd[0] = bpf_object__find_map_fd_by_name(obj, "ibs_fetch_map");
+	if (map_fd[0] < 0) {
+		fprintf(stderr, "BPF cannot find ibs_fetch_map\n");
+		goto cleanup;
+	}
+
+	map_fd[1] = bpf_object__find_map_fd_by_name(obj, "ibs_op_map");
+	if (map_fd[1] < 0) {
+		fprintf(stderr, "BPF cannot find ibs_op_map\n");
+		goto cleanup;
+	}
+
+	map_fd[3] = bpf_object__find_map_fd_by_name(obj, "op_page");
+	if (map_fd[3] < 0) {
+		fprintf(stderr, "BPF cannot find op_map\n");
+		goto cleanup;
+	}
+
+        map_fd[4] = bpf_object__find_map_fd_by_name(obj, "fetch_counter");
+        if (map_fd[4] < 0) {
+                fprintf(stderr, "BPF cannot find map_cmd\n");
+                goto cleanup;
+        }
+
+        map_fd[5] = bpf_object__find_map_fd_by_name(obj, "op_counter");
+        if (map_fd[5] < 0) {
+                fprintf(stderr, "BPF cannot find map_cmd\n");
+                goto cleanup;
+        }
+
+	err = parse_additional_bpf_programs(obj);
+	if (err) {
+		goto cleanup;
+	}
+	
+	err = launch_additional_bpf_programs();
+	if (err) {
+		goto cleanup;
+	}
+
+	printf("\f");
+	printf("%s%s", BRIGHT, BMAGENTA);
+	printf("Collecting IBS %s samples .....\n",
+		(l3miss) ? "MISS Filter" : "CLASSIC");
+	printf("%s", NORM);
+
+	err = init_ibs_sample_worker(map_fd, msecs);
+	assert(err == 0);
+
+	if (trace_dir) {
+		err = tracer_init(trace_dir);
+		assert(err == 0);
+	} else {
+		err = init_page_mover();
+		assert(err == 0);
+	}
+
+	fetch_cnt_old = 0;
+	fetch_cnt_new = 0;
+	op_cnt_old = 0;
+	op_cnt_new = 0;
+
+	signal(SIGINT, interrupt_signal);
+
+	while (!err) {
+
+
+		if (ibs_fetch_sampling_begin(freq, prog[0], fetch_links) != 0) {
+			fprintf(stderr, "IBS Fetch sampling not supported, "
+				"falling back to software sampling\n");
+			if (perf_sampling_begin(freq, prog[2], perf_links) != 0)
+				goto cleanup;
+		}
+
+		if (ibs_op_sampling_begin(freq, prog[1], op_links) != 0) {
+			fprintf(stderr, "IBS OP sampling not supported, "
+				"Will not be able to sample hot data\n");
+		}
+
+		for (; ;)  {
+			fetch_cnt = peek_ibs_samples(map_fd[4], fetch_cnt_old,
+							&fetch_cnt_new);
+			op_cnt    = peek_ibs_samples(map_fd[5], op_cnt_old,
+						     &op_cnt_new);
+
+			if ((fetch_cnt >= MIN_IBS_SAMPLES)) {
+				fetch_cnt_old = fetch_cnt_new;
+				/*
+				if (op_cnt >= MIN_IBS_OP_SAMPLES) {
+					op_cnt_old = op_cnt_new;
+					break;
+				}
+				*/
+				break;
+			}
+
+			if ((op_cnt >= MIN_IBS_SAMPLES)) {
+				op_cnt_old = op_cnt_new;
+				/*
+				if (fetch_cnt >= MIN_IBS_FETCH_SAMPLES) {
+					fetch_cnt_old = fetch_cnt_new;
+					break;
+				}
+				*/
+				break;
+			}
+
+			msecs_nap = msecs * 1000 / 10;
+			if (msecs_nap < 1000)
+				msecs_nap = 1000;
+
+			usleep(msecs_nap);
+			/*
+			 * Check if migration is making progress. If not
+			 * break out of the processing loop.
+			 */
+			err = pages_migration_status(msecs,
+						     &ibs_samples_old,
+						     &pages_migrated_old,
+						     &no_migrations);
+			if (err)
+				break;
+		}
+
+		if (fetch_links)
+			ibs_sampling_end(fetch_links); /* IBS fetch */
+
+		if (op_links)
+			ibs_sampling_end(op_links);    /* IBS op */
+
+
+		ibs_process_samples(ibs_worker, fetch_cnt, op_cnt);
+
+		usleep(msecs * 1000 / maximizer_mode);
+	}
+	balancer_cleanup(map_fd[0], map_fd[1]);
+
+cleanup:
+	deinit_ibs_sample_worker(atomic64_read(&ibs_workers));
+	terminate_additional_bpf_programs();
+	if (fetch_links)
+		ibs_sampling_end(fetch_links); /* IBS fetch */
+
+	if (op_links)
+		ibs_sampling_end(op_links);    /* IBS op */
+
+	free(fetch_links);
+	free(op_links);
+	free(perf_links);
+	bpf_object__close(obj);
+
+
+	return err;
+}
+
+static int balancer_function(const char *kernobj, int freq, int msecs)
+{
+	if (trace_dir) {
+		return balancer_function_int(kernobj, freq, msecs);
+	}
+	/*
+	 * Creating a process to handle an unknown problem where the samples
+	 * are limited to the migrated pages after several minutes. The root
+	 * cause is still unknown. The workaroud until the problem is resolved
+	 * is to run balanacer under a new process and terminate the process
+	 * when the migration logic stops making forward progress.
+	 */
+#if 1
+	int status;
+	pid_t pid;
+
+	pid = fork();
+	if (pid == 0) {
+		status = balancer_function_int(kernobj, freq, msecs);
+		exit(status);
+	}
+
+	wait(&status);
+
+	if (WIFEXITED(status))
+		return WEXITSTATUS(status);
+
+	return -EINVAL;
+#else
+	return balancer_function_int(kernobj, freq, msecs);
+#endif
+}
+
+int main(int argc, char **argv)
+{
+	int base_page_size;
+	int opt;
+	int freq = MEMB_CLOCK;
+	int msecs = MEMB_INTVL;
+	int err = -1;
+        struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
+	char *include_pids = NULL;
+	char *include_ppids = NULL;
 	char *tier_args = NULL;
 
         if (setrlimit(RLIMIT_MEMLOCK, &r)) {
@@ -1741,6 +2111,9 @@ int main(int argc, char **argv)
 			break;
 		case 'm':
 			min_pct = atof(optarg);
+			break;
+		case 't':
+			migration_timeout_sec = atoi(optarg);
 			break;
 		case 'r':
 			report_frequency = atoi(optarg);
@@ -1842,186 +2215,9 @@ int main(int argc, char **argv)
 	}
 #endif
 
-	/* create perf FDs for each CPU */
-	nr_cpus = sysconf(_SC_NPROCESSORS_ONLN);
-	fetch_links = calloc(nr_cpus, sizeof(struct bpf_link *));
-	if (!fetch_links) {
-		fprintf(stderr, "ERROR: malloc of links\n");
-		goto cleanup;
-	}
-
-	op_links = calloc(nr_cpus, sizeof(struct bpf_link *));
-	if (!op_links) {
-		fprintf(stderr, "ERROR: malloc of links\n");
-		goto cleanup;
-	}
-
-	perf_links = calloc(nr_cpus, sizeof(struct bpf_link *));
-	if (!perf_links) {
-		fprintf(stderr, "ERROR: malloc of links\n");
-		goto cleanup;
-	}
-
-	snprintf(filename, sizeof(filename), "%s_kern.o", argv[0]);
-	obj = bpf_object__open_file(filename, NULL);
-	if (libbpf_get_error(obj)) {
-		fprintf(stderr, "ERROR: opening BPF object file failed\n");
-		obj = NULL;
-		goto cleanup;
-	}
-
-	prog[0] = bpf_object__find_program_by_name(obj, "ibs_fetch_event");
-	if (!prog[0]) {
-		fprintf(stderr, "BPF cannot find ibs_trace_event program\n");
-		goto cleanup;
-	}
-
-	prog[1] = bpf_object__find_program_by_name(obj, "ibs_op_event");
-	if (!prog[1]) {
-		fprintf(stderr, "BPF cannot find ibs_op_event program\n");
-		goto cleanup;
-	}
-
-	/* load BPF program */
-	if (bpf_object__load(obj)) {
-		fprintf(stderr, "ERROR: loading BPF object file failed\n");
-		goto cleanup;
-	}
-
-	cpu_nodes = fill_cpu_nodes(obj);
-	if (cpu_nodes <= 0)
-		goto cleanup;
-
-	if (process_include_pids(obj, include_pids, false))
-		goto cleanup;
-
-	if (process_include_pids(obj, include_ppids, true))
-		goto cleanup;
-
-	map_fd[0] = bpf_object__find_map_fd_by_name(obj, "ibs_fetch_map");
-	if (map_fd[0] < 0) {
-		fprintf(stderr, "BPF cannot find ibs_fetch_map\n");
-		goto cleanup;
-	}
-
-	map_fd[1] = bpf_object__find_map_fd_by_name(obj, "ibs_op_map");
-	if (map_fd[1] < 0) {
-		fprintf(stderr, "BPF cannot find ibs_op_map\n");
-		goto cleanup;
-	}
-
-	map_fd[3] = bpf_object__find_map_fd_by_name(obj, "op_page");
-	if (map_fd[3] < 0) {
-		fprintf(stderr, "BPF cannot find op_map\n");
-		goto cleanup;
-	}
-
-        map_fd[4] = bpf_object__find_map_fd_by_name(obj, "fetch_counter");
-        if (map_fd[4] < 0) {
-                fprintf(stderr, "BPF cannot find map_cmd\n");
-                goto cleanup;
-        }
-
-        map_fd[5] = bpf_object__find_map_fd_by_name(obj, "op_counter");
-        if (map_fd[5] < 0) {
-                fprintf(stderr, "BPF cannot find map_cmd\n");
-                goto cleanup;
-        }
-
-	err = parse_additional_bpf_programs(obj);
-	if (err) {
-		goto cleanup;
-	}
-	
-	err = launch_additional_bpf_programs();
-	if (err) {
-		goto cleanup;
-	}
-
-	printf("\f");
-	err = init_ibs_sample_worker(map_fd, msecs);
-	assert(err == 0);
-
-	if (trace_dir) {
-		err = tracer_init(trace_dir);
-		assert(err == 0);
-	} else {
-		err = init_page_mover();
-		assert(err == 0);
-	}
-
-	fetch_cnt_old = 0;
-	fetch_cnt_new = 0;
-	op_cnt_old = 0;
-	op_cnt_new = 0;
-
-	signal(SIGINT, interrupt_signal);
-
-	while (!err) {
-
-		if (ibs_fetch_sampling_begin(freq, prog[0], fetch_links) != 0) {
-			fprintf(stderr, "IBS Fetch sampling not supported, "
-				"falling back to software sampling\n");
-			if (perf_sampling_begin(freq, prog[2], perf_links) != 0)
-				goto cleanup;
-		}
-
-		if (ibs_op_sampling_begin(freq, prog[1], op_links) != 0) {
-			fprintf(stderr, "IBS OP sampling not supported, "
-				"Will not be able to sample hot data\n");
-		}
-
-		for (; ;)  {
-			fetch_cnt = peek_ibs_samples(map_fd[4], fetch_cnt_old,
-							&fetch_cnt_new);
-			op_cnt    = peek_ibs_samples(map_fd[5], op_cnt_old,
-						     &op_cnt_new);
-
-			if ((fetch_cnt >= MIN_IBS_SAMPLES)) {
-				fetch_cnt_old = fetch_cnt_new;
-				if (op_cnt >= MIN_IBS_OP_SAMPLES) {
-					op_cnt_old = op_cnt_new;
-					break;
-				}
-			}
-
-			if ((op_cnt >= MIN_IBS_SAMPLES)) {
-				op_cnt_old = op_cnt_new;
-				if (fetch_cnt >= MIN_IBS_FETCH_SAMPLES) {
-					fetch_cnt_old = fetch_cnt_new;
-					break;
-				}
-			}
-
-			msecs_nap = msecs * 1000 / 10;
-			if (msecs_nap < 1000)
-				msecs_nap = 1000;
-
-			usleep(msecs_nap);
-		}
-
-		if (fetch_links)
-			ibs_sampling_end(fetch_links); /* IBS fetch */
-
-		if (op_links)
-			ibs_sampling_end(op_links);    /* IBS op */
-
-
-		ibs_process_samples(ibs_worker, fetch_cnt, op_cnt);
-
-		usleep(msecs * 1000 / maximizer_mode);
-	}
-
-cleanup:
-	terminate_additional_bpf_programs();
-	if (fetch_links)
-		ibs_sampling_end(fetch_links); /* IBS fetch */
-
-	if (op_links)
-		ibs_sampling_end(op_links);    /* IBS op */
-
-	free(fetch_links);
-	bpf_object__close(obj);
+	do {
+		err = balancer_function(argv[0], freq, msecs);
+	}  while(err == ETIMEDOUT);
 
 	return err;
 }
