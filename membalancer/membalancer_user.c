@@ -47,13 +47,14 @@ typedef __u64 u64;
 
 #define MEMB_CLOCK 25 
 #define MEMB_INTVL 100
-#define MIN_IBS_CLASSIC_SAMPLES 1000
-#define MIN_IBS_L3MISS_SAMPLES  5000
+#define MIN_IBS_CLASSIC_SAMPLES 200
+#define MIN_IBS_L3MISS_SAMPLES  200
 #define MIN_IBS_SAMPLES min_ibs_samples
 #define MIN_IBS_FETCH_SAMPLES (MIN_IBS_SAMPLES / 4)
-#define MIN_IBS_OP_SAMPLES    (MIN_IBS_SAMPLES / 4)
+#define MIN_IBS_OP_SAMPLES    (MIN_IBS_SAMPLES / 2)
 #define MIN_CNT 1
 #define MIN_PCT 1.75
+#define MIN_MIGRATED_PAGES 8192 
 
 static int nr_cpus;
 static double min_pct = 0.01;
@@ -1625,7 +1626,6 @@ static bool ibs_pending_samples(void)
 	fetch_samples = atomic64_read(&ibs_pending_fetch_samples);
 	op_samples = atomic64_read(&ibs_pending_op_samples);
 
-	/*	
 	if (fetch_samples >= MIN_IBS_SAMPLES &&
 	    op_samples >= MIN_IBS_OP_SAMPLES)
 		return true;
@@ -1633,10 +1633,11 @@ static bool ibs_pending_samples(void)
 	if (op_samples >= MIN_IBS_SAMPLES &&
 	    fetch_samples >= MIN_IBS_FETCH_SAMPLES)
 		return true;
-	*/
-	if ((fetch_samples >= MIN_IBS_SAMPLES) ||
-	    (op_samples >= MIN_IBS_SAMPLES))
+
+	if ((fetch_samples >= 2 * MIN_IBS_SAMPLES) ||
+	    (op_samples >= 2 * MIN_IBS_SAMPLES))
 		return true;
+
 
 	return false;
 }
@@ -1767,35 +1768,46 @@ static void interrupt_signal(int sig)
  * Returns ETIMEDOUT if migrations stops for the last N seconds;
  */
 static int pages_migration_status(int msecs,
+				  struct timeval*start,
 				  unsigned long *ibs_samples_old,
 				  unsigned long *pages_migrated_old,
 				  int           *no_migrations)
 {
-	int limit = migration_timeout_sec * 1000 / msecs;
+	int limit, max_secs;
+	struct timeval end;
 
 	if (!balancer_mode)
 		return 0;
-	/*
-	if (atomic64_read(&fetch_cnt) + atomic_read(&op_cnt) <=
+
+	if (migration_timeout_sec <= 0)
+		return 0;
+
+	if (atomic64_read(&fetch_cnt) + atomic64_read(&op_cnt) <=
 	     *ibs_samples_old) {
 		return 0;
 	}
 
 	*ibs_samples_old = atomic64_read(&fetch_cnt) + atomic64_read(&op_cnt);
-	*/
-	if (atomic64_read(&op_cnt) <=
-	     *ibs_samples_old) {
-		return 0;
-	}
-
-	*ibs_samples_old = atomic64_read(&op_cnt);
 	if (atomic64_read(&pages_migrated) <= *pages_migrated_old) {
 		++*no_migrations;
+		limit = migration_timeout_sec * 1000 / msecs;
 		if (*no_migrations >= limit)
 			return ETIMEDOUT;
 	} else {
 		*no_migrations = 0;
+		if ((migration_timeout_sec > 0) &&
+		    (atomic64_read(&pages_migrated) <=
+			MIN_MIGRATED_PAGES + *pages_migrated_old)) {
+			gettimeofday(&end, NULL);
+			max_secs = 12 * migration_timeout_sec;
+			if (max_secs < 30)
+				max_secs = 30;
+				
+			if (seconds_elapsed(start, &end) >= max_secs)
+				return ETIMEDOUT;
+		}
 	}
+
 	*pages_migrated_old = atomic64_read(&pages_migrated);
 
 	return 0;
@@ -1824,6 +1836,7 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs)
 	unsigned long fetch_cnt_new, op_cnt_new;
 	unsigned long ibs_samples_old = 0, pages_migrated_old = 0;
 	int no_migrations = 0;
+	struct timeval start;
 
 	nr_cpus = sysconf(_SC_NPROCESSORS_ONLN);
 	fetch_links = calloc(nr_cpus, sizeof(struct bpf_link *));
@@ -1943,6 +1956,7 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs)
 	op_cnt_new = 0;
 
 	signal(SIGINT, interrupt_signal);
+	gettimeofday(&start, NULL);
 
 	while (!err) {
 
@@ -1967,25 +1981,29 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs)
 
 			if ((fetch_cnt >= MIN_IBS_SAMPLES)) {
 				fetch_cnt_old = fetch_cnt_new;
-				/*
 				if (op_cnt >= MIN_IBS_OP_SAMPLES) {
 					op_cnt_old = op_cnt_new;
 					break;
 				}
-				*/
 				break;
 			}
 
 			if ((op_cnt >= MIN_IBS_SAMPLES)) {
 				op_cnt_old = op_cnt_new;
-				/*
 				if (fetch_cnt >= MIN_IBS_FETCH_SAMPLES) {
 					fetch_cnt_old = fetch_cnt_new;
 					break;
 				}
-				*/
 				break;
 			}
+
+			if ((op_cnt >= 2 * MIN_IBS_SAMPLES) ||
+			    (fetch_cnt >= 2 * MIN_IBS_SAMPLES)) {
+				op_cnt_old = op_cnt_new;
+				fetch_cnt_old = fetch_cnt_new;
+				break;
+			}
+
 
 			msecs_nap = msecs * 1000 / 10;
 			if (msecs_nap < 1000)
@@ -1997,6 +2015,7 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs)
 			 * break out of the processing loop.
 			 */
 			err = pages_migration_status(msecs,
+						     &start,
 						     &ibs_samples_old,
 						     &pages_migrated_old,
 						     &no_migrations);

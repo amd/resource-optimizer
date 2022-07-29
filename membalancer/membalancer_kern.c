@@ -282,7 +282,7 @@ int ibs_fetch_event(struct bpf_perf_event_data *ctx)
 
 		save_node_usage(tgid, value->counts);
 
-		inc_ibs_fetch_samples();
+		//inc_ibs_fetch_samples();
 	} else {
 		int i;
 		init_val.data_saved = 0;
@@ -373,7 +373,7 @@ int ibs_op_event(struct bpf_perf_event_data *ctx)
 			value->data_saved = 1;
 		}
 		save_node_usage(tgid, value->counts);
-		inc_ibs_op_samples();
+		//inc_ibs_op_samples();
 	} else {
 		int i;
 
