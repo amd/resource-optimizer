@@ -54,7 +54,8 @@ typedef __u64 u64;
 #define MIN_IBS_OP_SAMPLES    (MIN_IBS_SAMPLES / 2)
 #define MIN_CNT 1
 #define MIN_PCT 1.75
-#define MIN_MIGRATED_PAGES 8192 
+#define MIN_MIGRATED_PAGES 	1024
+#define MIN_MIGRATED_PAGES_TIER 4096
 
 static int nr_cpus;
 static double min_pct = 0.01;
@@ -67,7 +68,8 @@ static int report_frequency = 1;
 static char *trace_dir;
 bool tracer_physical_mode = true;
 static unsigned int min_ibs_samples = MIN_IBS_CLASSIC_SAMPLES;
-static int migration_timeout_sec = 5;
+static int migration_timeout_sec = 10;
+static int min_migrated_pages = MIN_MIGRATED_PAGES;
 
 static char cmd_args[]  = "f:P:p:r:m:M:v:U:T:t:D:L:B:uhcbHVl";
 static int ibs_fetch_device = -1;
@@ -1770,10 +1772,9 @@ static void interrupt_signal(int sig)
 static int pages_migration_status(int msecs,
 				  struct timeval*start,
 				  unsigned long *ibs_samples_old,
-				  unsigned long *pages_migrated_old,
-				  int           *no_migrations)
+				  unsigned long *pages_migrated_old)
 {
-	int limit, max_secs;
+	int max_secs;
 	struct timeval end;
 
 	if (!balancer_mode)
@@ -1782,33 +1783,32 @@ static int pages_migration_status(int msecs,
 	if (migration_timeout_sec <= 0)
 		return 0;
 
-	if (atomic64_read(&fetch_cnt) + atomic64_read(&op_cnt) <=
-	     *ibs_samples_old) {
-		return 0;
-	}
-
-	*ibs_samples_old = atomic64_read(&fetch_cnt) + atomic64_read(&op_cnt);
-	if (atomic64_read(&pages_migrated) <= *pages_migrated_old) {
-		++*no_migrations;
-		limit = migration_timeout_sec * 1000 / msecs;
-		if (*no_migrations >= limit)
+	gettimeofday(&end, NULL);
+	max_secs = migration_timeout_sec;
+	if (seconds_elapsed(start, &end) >= max_secs) {
+		if ((atomic64_read(&op_cnt) + atomic64_read(&fetch_cnt)) <=
+			((*ibs_samples_old + MIN_IBS_SAMPLES))) {
 			return ETIMEDOUT;
-	} else {
-		*no_migrations = 0;
-		if ((migration_timeout_sec > 0) &&
-		    (atomic64_read(&pages_migrated) <=
-			MIN_MIGRATED_PAGES + *pages_migrated_old)) {
-			gettimeofday(&end, NULL);
-			max_secs = 12 * migration_timeout_sec;
-			if (max_secs < 30)
-				max_secs = 30;
-				
-			if (seconds_elapsed(start, &end) >= max_secs)
-				return ETIMEDOUT;
 		}
-	}
 
-	*pages_migrated_old = atomic64_read(&pages_migrated);
+		*ibs_samples_old = atomic64_read(&op_cnt) +
+				   atomic64_read(&fetch_cnt);
+
+		if (atomic64_read(&pages_migrated) <
+			MIN_MIGRATED_PAGES + *pages_migrated_old) {
+			return ETIMEDOUT;
+		}
+		/*
+		printf("migrated_pages %ld pages_migrated_old %ld secs %d\n",
+			atomic64_read(&pages_migrated),
+			*pages_migrated_old,
+			seconds_elapsed(start, &end));
+		*/
+
+		gettimeofday(start, NULL);
+
+		*pages_migrated_old = atomic64_read(&pages_migrated);
+	}
 
 	return 0;
 }
@@ -1835,7 +1835,6 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs)
 	unsigned long fetch_cnt_old, op_cnt_old;
 	unsigned long fetch_cnt_new, op_cnt_new;
 	unsigned long ibs_samples_old = 0, pages_migrated_old = 0;
-	int no_migrations = 0;
 	struct timeval start;
 
 	nr_cpus = sysconf(_SC_NPROCESSORS_ONLN);
@@ -1999,7 +1998,7 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs)
 
 			if ((op_cnt >= 2 * MIN_IBS_SAMPLES) ||
 			    (fetch_cnt >= 2 * MIN_IBS_SAMPLES)) {
-				op_cnt_old = op_cnt_new;
+				op_cnt_old    = op_cnt_new;
 				fetch_cnt_old = fetch_cnt_new;
 				break;
 			}
@@ -2017,8 +2016,7 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs)
 			err = pages_migration_status(msecs,
 						     &start,
 						     &ibs_samples_old,
-						     &pages_migrated_old,
-						     &no_migrations);
+						     &pages_migrated_old);
 			if (err)
 				break;
 		}
@@ -2119,6 +2117,7 @@ int main(int argc, char **argv)
 			tracer_physical_mode = false;
 			break;
 		case 'T':
+			min_migrated_pages = MIN_MIGRATED_PAGES_TIER;
 			tier_args = optarg;
 			tier_mode = true;
 			break;
