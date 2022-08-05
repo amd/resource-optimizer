@@ -68,7 +68,7 @@ static int report_frequency = 1;
 static char *trace_dir;
 bool tracer_physical_mode = true;
 static unsigned int min_ibs_samples = MIN_IBS_CLASSIC_SAMPLES;
-static int migration_timeout_sec = 10;
+static int migration_timeout_sec = 20;
 static int min_migrated_pages = MIN_MIGRATED_PAGES;
 
 static char cmd_args[]  = "f:P:p:r:m:M:v:U:T:t:D:L:B:uhcbHVl";
@@ -1819,7 +1819,14 @@ static void balancer_cleanup(int fetch_fd, int op_fd)
 	cleanup_op_samples(op_fd);
 }
 
-static int balancer_function_int(const char *kernobj, int freq, int msecs)
+static void set_knob(int fd, int knob, int value)
+{
+	bpf_map_update_elem(fd, &knob, &value, BPF_NOEXIST);
+}
+
+
+static int balancer_function_int(const char *kernobj, int freq, int msecs,
+				 char  *include_pids, char *include_ppids)
 {
 	int msecs_nap;
 	int err = -1;
@@ -1829,8 +1836,6 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs)
 	struct bpf_link **perf_links = NULL;
 	char filename[256];
 	int map_fd[MAX_MAPS];
-	char *include_pids = NULL;
-	char *include_ppids = NULL;
 	unsigned long fetch_cnt, op_cnt;
 	unsigned long fetch_cnt_old, op_cnt_old;
 	unsigned long fetch_cnt_new, op_cnt_new;
@@ -1866,7 +1871,7 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs)
 
 	prog[0] = bpf_object__find_program_by_name(obj, "ibs_fetch_event");
 	if (!prog[0]) {
-		fprintf(stderr, "BPF cannot find ibs_trace_event program\n");
+		fprintf(stderr, "BPF cannot find ibs_fetch_event program\n");
 		goto cleanup;
 	}
 
@@ -1912,15 +1917,29 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs)
 
         map_fd[4] = bpf_object__find_map_fd_by_name(obj, "fetch_counter");
         if (map_fd[4] < 0) {
-                fprintf(stderr, "BPF cannot find map_cmd\n");
+                fprintf(stderr, "BPF cannot find map fetch_counter\n");
                 goto cleanup;
         }
 
         map_fd[5] = bpf_object__find_map_fd_by_name(obj, "op_counter");
         if (map_fd[5] < 0) {
-                fprintf(stderr, "BPF cannot find map_cmd\n");
+                fprintf(stderr, "BPF cannot find map op_counter\n");
                 goto cleanup;
         }
+
+        map_fd[6] = bpf_object__find_map_fd_by_name(obj, "knobs");
+        if (map_fd[6] < 0) {
+                fprintf(stderr, "BPF cannot find map knobs\n");
+                goto cleanup;
+        }
+
+	if (include_ppids)
+		set_knob(map_fd[6], CHECK_PPID, 1);
+
+	if (tier_mode ==  false)
+		set_knob(map_fd[6], PER_NUMA_ACCESS_STATS, 1);
+
+	set_knob(map_fd[6], LAST_KNOB, 1);
 
 	err = parse_additional_bpf_programs(obj);
 	if (err) {
@@ -2052,11 +2071,14 @@ cleanup:
 	return err;
 }
 
-static int balancer_function(const char *kernobj, int freq, int msecs)
+static int balancer_function(const char *kernobj, int freq, int msecs,
+			     char *include_pids, char *include_ppids)
 {
 	if (trace_dir) {
-		return balancer_function_int(kernobj, freq, msecs);
+		 return balancer_function_int(kernobj, freq, msecs,
+				 	      include_pids, include_ppids);
 	}
+
 	/*
 	 * Creating a process to handle an unknown problem where the samples
 	 * are limited to the migrated pages after several minutes. The root
@@ -2070,7 +2092,8 @@ static int balancer_function(const char *kernobj, int freq, int msecs)
 
 	pid = fork();
 	if (pid == 0) {
-		status = balancer_function_int(kernobj, freq, msecs);
+		status = balancer_function_int(kernobj, freq, msecs,
+		       			       include_pids, include_ppids);
 		exit(status);
 	}
 
@@ -2093,9 +2116,9 @@ int main(int argc, char **argv)
 	int msecs = MEMB_INTVL;
 	int err = -1;
         struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
+	char *tier_args = NULL;
 	char *include_pids = NULL;
 	char *include_ppids = NULL;
-	char *tier_args = NULL;
 
         if (setrlimit(RLIMIT_MEMLOCK, &r)) {
                 perror("setrlimit(RLIMIT_MEMLOCK)");
@@ -2234,7 +2257,8 @@ int main(int argc, char **argv)
 #endif
 
 	do {
-		err = balancer_function(argv[0], freq, msecs);
+		err = balancer_function(argv[0], freq, msecs,
+					include_pids, include_ppids);
 	}  while(err == ETIMEDOUT);
 
 	return err;

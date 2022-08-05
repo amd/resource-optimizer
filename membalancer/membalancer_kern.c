@@ -40,6 +40,7 @@ struct {
 	__uint(max_entries, 8192);
 } pid_exclude SEC(".maps");
 
+
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, u64);
@@ -60,6 +61,13 @@ struct {
 	__type(value, struct value_data);
 	__uint(max_entries, MAX_STORED_PAGES);
 } op_page SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, int);
+	__type(value, int);
+	__uint(max_entries, TOTAL_KNOBS);
+} knobs SEC(".maps");
 
 /*
 struct {
@@ -99,9 +107,54 @@ struct {
 } op_counter SEC(".maps");
 
 static int check_ppid = -1;
+static bool per_numa_access_stats = true;
+static bool per_numa_latency_stats = false;
+static unsigned long  config_done = 0;
 
 static volatile u64 ibs_fetches, ibs_ops;
 unsigned long __atomic_fetch_add_N(volatile u64 *ptr, u64 val, int ordering);
+
+static void init_function(void)
+{
+	int i, j, *valuep;
+
+	if (ATOMIC_CMPXCHG(&config_done, 0, 1) != 0)
+		return;
+
+	for (i = CHECK_PPID; i < TOTAL_KNOBS; i++) {
+		j = i;
+		valuep = bpf_map_lookup_elem(&knobs, (const int *)&j);
+
+		if (i == CHECK_PPID)  {
+			if ((valuep != NULL) && (*valuep == 1))
+				check_ppid = 1;
+			else
+				check_ppid = 0;
+		}
+
+		if (i == PER_NUMA_ACCESS_STATS) {
+			if (valuep != NULL && (*valuep == 1))
+				per_numa_access_stats = true;
+			else
+				per_numa_access_stats = false;
+
+		}
+
+		if (i == PER_NUMA_LATENCY_STATS) {
+			if (valuep != NULL && (*valuep == 1))
+				per_numa_latency_stats = true;
+			else
+				per_numa_latency_stats = false;
+		}
+
+	}
+
+	if (check_ppid == 1) {
+		pid_t nilpid = -1;
+		if (bpf_map_lookup_elem(&ppid_include, &nilpid))
+			check_ppid = 0;
+	}
+}
 
 static inline void inc_ibs_fetch_samples(void)
 {
@@ -206,6 +259,9 @@ static void save_node_usage(pid_t pid, volatile u32 *counts)
 {
 	int *nodep, node;
 
+	if (!per_numa_access_stats)
+		return;
+
         nodep = bpf_map_lookup_elem(&pid_node_map, &pid);
 	if (!nodep)
 		return;
@@ -234,6 +290,8 @@ int ibs_fetch_event(struct bpf_perf_event_data *ctx)
 	struct perf_raw_frag frag;
 	void *addr;
 	u64 tgid;
+
+	init_function();
 
 	tgid = bpf_get_current_pid_tgid();
 	if (!valid_pid(tgid >> 32))
@@ -272,9 +330,6 @@ int ibs_fetch_event(struct bpf_perf_event_data *ctx)
 
 	value = bpf_map_lookup_elem(&ibs_fetch_map, &key);
 	if (value) {
-		/*
-		++value->count;
-		*/
 		ATOMIC_INC(&value->count);
 		if (IBS_KERN_SAMPLE(ip) && !value->data_saved) {
 			value->data_saved = 1;
@@ -282,7 +337,7 @@ int ibs_fetch_event(struct bpf_perf_event_data *ctx)
 
 		save_node_usage(tgid, value->counts);
 
-		//inc_ibs_fetch_samples();
+		inc_ibs_fetch_samples();
 	} else {
 		int i;
 		init_val.data_saved = 0;
@@ -320,6 +375,8 @@ int ibs_op_event(struct bpf_perf_event_data *ctx)
 	struct value_op init_val, *value;
 	u64 tgid;
 
+	init_function();
+
 	tgid = bpf_get_current_pid_tgid();
 	if (!valid_pid(tgid >> 32))
 		return 0;
@@ -327,7 +384,6 @@ int ibs_op_event(struct bpf_perf_event_data *ctx)
 	ip = PT_REGS_IP(&ctx->regs);
 	if (IBS_KERN_SAMPLE(ip))
 		return 0;
-
 
 	/* Collect samples from IBS Fetch registers */
 	kern_ctx = (struct bpf_perf_event_data_kern *)ctx;
@@ -366,14 +422,13 @@ int ibs_op_event(struct bpf_perf_event_data *ctx)
 		*/
 
 		ATOMIC_INC(&value->count);
-		/*
-		++value->count;
-		*/
 		if (IBS_KERN_SAMPLE(ip) && !value->data_saved) {
 			value->data_saved = 1;
 		}
 		save_node_usage(tgid, value->counts);
-		//inc_ibs_op_samples();
+		/*
+		inc_ibs_op_samples();
+		*/
 	} else {
 		int i;
 
@@ -414,6 +469,8 @@ int sched_wakeup(struct sched_wakeup *wakeup)
 {
         int cpu = 0, node, *nodep = NULL;
         pid_t pid = wakeup->pid;
+
+	init_function();
 
         if (!valid_pid(pid))
                 return 0;

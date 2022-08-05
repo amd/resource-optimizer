@@ -16,7 +16,7 @@
 #define PROCESSNAMELEN 32
 #define CMW_PAGE_OFFSET 0xffff880000000000
 #define MAX_CPUS 1024
-#define MAX_MAPS 6
+#define MAX_MAPS 7
 #define MAX_NUMA_NODES 8
 #define MAX_PROCESS_CNT 32768
 
@@ -32,6 +32,14 @@ enum {
         IBS_FETCH_LINADDR,
         IBS_FETCH_PHYSADDR,
         IBSFETCH_REG_COUNT,
+};
+
+enum balancer_knobs {
+	CHECK_PPID,
+	PER_NUMA_ACCESS_STATS,
+	PER_NUMA_LATENCY_STATS,
+	LAST_KNOB,
+	TOTAL_KNOBS,
 };
 
 struct perf_ibs_fetch_data {
@@ -121,6 +129,7 @@ struct sched_exit {
 */
 #define ATOMIC_INC(v)  __atomic_add_fetch((v), 1, __ATOMIC_SEQ_CST)
 #define ATOMIC_READ(v) atomic64_read((atomic64_t *)(v))
+#define ATOMIC_CMPXCHG(v, cur, new) __sync_val_compare_and_swap((v), cur, new)
 #else
 /*
 #define ATOMIC_READ(v) __sync_fetch_and_add((v), 0)
