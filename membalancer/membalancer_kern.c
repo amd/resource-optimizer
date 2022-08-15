@@ -109,7 +109,8 @@ struct {
 static int check_ppid = -1;
 static bool per_numa_access_stats = true;
 static bool per_numa_latency_stats = false;
-static unsigned long  config_done = 0;
+static unsigned long config_done = 0;
+static unsigned int kern_verbose;
 
 static volatile u64 ibs_fetches, ibs_ops;
 unsigned long __atomic_fetch_add_N(volatile u64 *ptr, u64 val, int ordering);
@@ -147,6 +148,11 @@ static void init_function(void)
 				per_numa_latency_stats = false;
 		}
 
+		if (i == KERN_VERBOSE) {
+			if (valuep != NULL && (*valuep > 0))
+				kern_verbose = *valuep;
+		}
+
 	}
 
 	if (check_ppid == 1) {
@@ -176,7 +182,7 @@ static inline void inc_ibs_op_samples(void)
         bpf_map_update_elem(&op_counter, &key, &value, BPF_ANY);
 }
 
-static bool valid_pid(pid_t pid)
+static bool valid_pid_with_task(pid_t pid, struct task_struct *mytask)
 {
 	pid_t nilpid;
 
@@ -200,7 +206,11 @@ static bool valid_pid(pid_t pid)
 		struct task_struct *task, *parent;
 		pid_t ppid;
 
-		task = (struct task_struct *)bpf_get_current_task();
+		if (mytask)
+			task = mytask;
+		else
+			task = (struct task_struct *)bpf_get_current_task();
+
 		bpf_probe_read(&parent, sizeof(parent), &task->parent);
 		if (parent) {
 			bpf_probe_read(&pid, sizeof(pid), &task->pid);
@@ -228,6 +238,11 @@ static bool valid_pid(pid_t pid)
 		return true;
 
 	return false;
+}
+
+static bool valid_pid(pid_t pid)
+{
+	return valid_pid_with_task(pid, NULL);
 }
 
 #if 1
@@ -263,8 +278,19 @@ static void save_node_usage(pid_t pid, volatile u32 *counts)
 		return;
 
         nodep = bpf_map_lookup_elem(&pid_node_map, &pid);
-	if (!nodep)
+	if (!nodep) {
+		if (kern_verbose >= 5) {
+			char msg[] = "NODE not found pid %d node %p";
+			bpf_trace_printk(msg, sizeof(msg), pid, nodep);
+		}
 		return;
+	}
+
+	if (kern_verbose >= 5) {
+		char msg[] = "NODE FOUND pid %d node %d";
+		bpf_trace_printk(msg, sizeof(msg), pid, *nodep);
+	}
+
 
 	node = *nodep;
 
@@ -335,7 +361,7 @@ int ibs_fetch_event(struct bpf_perf_event_data *ctx)
 			value->data_saved = 1;
 		}
 
-		save_node_usage(tgid, value->counts);
+		save_node_usage(tgid >> 32,  value->counts);
 
 		inc_ibs_fetch_samples();
 	} else {
@@ -347,7 +373,7 @@ int ibs_fetch_event(struct bpf_perf_event_data *ctx)
 		for (i = 0; i < MAX_NUMA_NODES; i++)
 			init_val.counts[i] = 0;
 
-		save_node_usage(tgid, init_val.counts);
+		save_node_usage(tgid >> 32, init_val.counts);
 
 		/* If its is akernel sample or user sample with process id
 		 * then record it.
@@ -425,7 +451,7 @@ int ibs_op_event(struct bpf_perf_event_data *ctx)
 		if (IBS_KERN_SAMPLE(ip) && !value->data_saved) {
 			value->data_saved = 1;
 		}
-		save_node_usage(tgid, value->counts);
+		save_node_usage(tgid >> 32, value->counts);
 		/*
 		inc_ibs_op_samples();
 		*/
@@ -439,7 +465,7 @@ int ibs_op_event(struct bpf_perf_event_data *ctx)
 		for (i = 0; i < MAX_NUMA_NODES; i++)
 			init_val.counts[i] = 0;
 
-		save_node_usage(tgid, init_val.counts);
+		save_node_usage(tgid >> 32, init_val.counts);
 		/*
 		init_val.op_regs[IBS_OP_CTL] = regs[IBS_OP_CTL];
 		init_val.op_regs[IBS_OP_RIP] = regs[IBS_OP_RIP];
@@ -487,6 +513,47 @@ int sched_wakeup(struct sched_wakeup *wakeup)
 	return 0;
 }
 
+SEC("kprobe/finish_task_switch")
+int sched_switch(struct pt_regs *ctx)
+{
+        pid_t pid, tgid;
+        int cpu = 0, node, *nodep = NULL;
+        struct task_struct *task = (void *) PT_REGS_PARM1(ctx);
+
+
+        if (task) {
+                bpf_probe_read(&pid, sizeof(pid), &task->tgid);
+                bpf_probe_read(&tgid, sizeof(tgid), &task->tgid);
+
+                bpf_probe_read(&cpu, sizeof(cpu), &task->cpu);
+        } else {
+		return 0;
+        }
+
+        if (!valid_pid_with_task(pid, task))
+                return 0;
+
+        init_function();
+
+        nodep = bpf_map_lookup_elem(&cpu_map, &cpu);
+        if (nodep) {
+                node = *nodep;
+
+                bpf_map_update_elem(&pid_node_map, &pid, &node, BPF_ANY);
+	}
+
+	if (kern_verbose >= 5) {
+        	if (nodep) {
+                	char msg[] = "PID %d cpu %d node %d";
+                	bpf_trace_printk(msg, sizeof(msg), pid, cpu, node);
+		} else {
+                	char msg[] = "bpf_map_lookup_elem failed pid %d cpu %d";
+                	bpf_trace_printk(msg, sizeof(msg), pid, cpu);
+		}
+        }
+
+        return 0;
+}
 
 /*
  * Function/Callback to perform the cleanups upon process termination.

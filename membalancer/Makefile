@@ -1,5 +1,4 @@
 KDIR ?= /usr/src/linux-5.19-rc4
-#KDIR ?= /home/skurichi/fedora
 LIBBPF = /home/skurichi/libbpf
 CLANG ?= clang
 LLC ?= llc

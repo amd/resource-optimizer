@@ -93,7 +93,7 @@ static struct bpf_program *additional_programs[ADDITIONAL_PROGRAMS];
 static int addtional_program_count;
 static struct bpf_link *additional_bpflinks[ADDITIONAL_PROGRAMS];
 static char * additional_programs_name[ADDITIONAL_PROGRAMS] = {
-	"sched_wakeup",
+	"sched_switch",
 	"sched_process_exit",
 	NULL,
 };
@@ -1939,6 +1939,7 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 	if (tier_mode ==  false)
 		set_knob(map_fd[6], PER_NUMA_ACCESS_STATS, 1);
 
+	set_knob(map_fd[6], KERN_VERBOSE, verbose);
 	set_knob(map_fd[6], LAST_KNOB, 1);
 
 	err = parse_additional_bpf_programs(obj);
@@ -1978,17 +1979,24 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 
 	while (!err) {
 
-
 		if (ibs_fetch_sampling_begin(freq, prog[0], fetch_links) != 0) {
-			fprintf(stderr, "IBS Fetch sampling not supported, "
-				"falling back to software sampling\n");
+			if (l3miss)
+				fprintf(stderr,
+					"IBS Fetch L3 miss filtering not supported\n");
+
+			else
+				fprintf(stderr, "IBS Fetch sampling not supported\n");
+
 			if (perf_sampling_begin(freq, prog[2], perf_links) != 0)
 				goto cleanup;
+
 		}
 
 		if (ibs_op_sampling_begin(freq, prog[1], op_links) != 0) {
-			fprintf(stderr, "IBS OP sampling not supported, "
-				"Will not be able to sample hot data\n");
+			if (l3miss)
+				fprintf(stderr, "IBS OP L3 miss fitlering  not supported\n");
+			else
+				fprintf(stderr, "IBS OP sampling not supported\n");
 		}
 
 		for (; ;)  {

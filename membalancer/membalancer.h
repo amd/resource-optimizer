@@ -38,6 +38,7 @@ enum balancer_knobs {
 	CHECK_PPID,
 	PER_NUMA_ACCESS_STATS,
 	PER_NUMA_LATENCY_STATS,
+	KERN_VERBOSE,
 	LAST_KNOB,
 	TOTAL_KNOBS,
 };
@@ -129,7 +130,18 @@ struct sched_exit {
 */
 #define ATOMIC_INC(v)  __atomic_add_fetch((v), 1, __ATOMIC_SEQ_CST)
 #define ATOMIC_READ(v) atomic64_read((atomic64_t *)(v))
+#ifdef USE_CMPXCHG
 #define ATOMIC_CMPXCHG(v, cur, new) __sync_val_compare_and_swap((v), cur, new)
+#else
+#define ATOMIC_CMPXCHG(v, cur, new) atomic_cmpxchg_local((v))
+static inline bool atomic_cmpxchg_local(volatile unsigned long *v)
+{
+        if (ATOMIC_READ(v) != 0)
+                return false;
+        ATOMIC_INC(v);
+        return true;
+}
+#endif
 #else
 /*
 #define ATOMIC_READ(v) __sync_fetch_and_add((v), 0)
