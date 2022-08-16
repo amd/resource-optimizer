@@ -111,6 +111,7 @@ static bool per_numa_access_stats = true;
 static bool per_numa_latency_stats = false;
 static unsigned long config_done = 0;
 static unsigned int kern_verbose;
+static pid_t my_own_pid;
 
 static volatile u64 ibs_fetches, ibs_ops;
 unsigned long __atomic_fetch_add_N(volatile u64 *ptr, u64 val, int ordering);
@@ -153,6 +154,11 @@ static void init_function(void)
 				kern_verbose = *valuep;
 		}
 
+		if (i == MY_OWN_PID) {
+			if (valuep != NULL && (*valuep > 0))
+				my_own_pid = *valuep;
+		}
+
 	}
 
 	if (check_ppid == 1) {
@@ -185,6 +191,9 @@ static inline void inc_ibs_op_samples(void)
 static bool valid_pid_with_task(pid_t pid, struct task_struct *mytask)
 {
 	pid_t nilpid;
+
+	if ((my_own_pid != 0) && (my_own_pid == pid))
+		return false;
 
 	nilpid = -1;
 
@@ -280,8 +289,10 @@ static void save_node_usage(pid_t pid, volatile u32 *counts)
         nodep = bpf_map_lookup_elem(&pid_node_map, &pid);
 	if (!nodep) {
 		if (kern_verbose >= 5) {
+			/*
 			char msg[] = "NODE not found pid %d node %p";
 			bpf_trace_printk(msg, sizeof(msg), pid, nodep);
+			*/
 		}
 		return;
 	}
@@ -511,6 +522,16 @@ int save_process_cpu(struct sched_wakeup *wakeup)
                 bpf_map_update_elem(&pid_node_map, &pid, &node, BPF_ANY);
         }
 
+	if (kern_verbose >= 5) {
+        	if (nodep) {
+                	char msg[] = "PID %d cpu %d node %d";
+                	bpf_trace_printk(msg, sizeof(msg), pid, cpu, node);
+		} else {
+                	char msg[] = "bpf_map_lookup_elem failed pid %d cpu %d";
+                	bpf_trace_printk(msg, sizeof(msg), pid, cpu);
+		}
+        }
+
 	return 0;
 }
 #else
@@ -524,7 +545,7 @@ int save_process_cpu(struct pt_regs *ctx)
         if (!task)
 		return 0;
 
-	bpf_probe_read(&pid, sizeof(pid), &task->tgid);
+	bpf_probe_read(&pid, sizeof(pid), &task->pid);
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5,19,0)
 	bpf_probe_read(&cpu, sizeof(cpu), &task->cpu);
 #else

@@ -36,6 +36,7 @@ enum {
 
 enum balancer_knobs {
 	CHECK_PPID,
+	MY_OWN_PID,
 	PER_NUMA_ACCESS_STATS,
 	PER_NUMA_LATENCY_STATS,
 	KERN_VERBOSE,
