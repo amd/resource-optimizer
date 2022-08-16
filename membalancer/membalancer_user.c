@@ -93,7 +93,7 @@ static struct bpf_program *additional_programs[ADDITIONAL_PROGRAMS];
 static int addtional_program_count;
 static struct bpf_link *additional_bpflinks[ADDITIONAL_PROGRAMS];
 static char * additional_programs_name[ADDITIONAL_PROGRAMS] = {
-	"sched_switch",
+	"save_process_cpu",
 	"sched_process_exit",
 	NULL,
 };

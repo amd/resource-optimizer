@@ -106,7 +106,7 @@ struct sched_wakeup {
 #ifndef KERNEL_VERSION
 #define KERNEL_VERSION(a, b, c) (((a) << 16) + ((b) << 8) + ((c) > 255 ? 255 : (c)))
 #endif
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5,9,0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,19,0)
         int   success;
 #endif
         int   target_cpu;
@@ -130,9 +130,8 @@ struct sched_exit {
 */
 #define ATOMIC_INC(v)  __atomic_add_fetch((v), 1, __ATOMIC_SEQ_CST)
 #define ATOMIC_READ(v) atomic64_read((atomic64_t *)(v))
-#ifdef USE_CMPXCHG
-#define ATOMIC_CMPXCHG(v, cur, new) __sync_val_compare_and_swap((v), cur, new)
-#else
+
+#if (__clang_major__ < 14)
 #define ATOMIC_CMPXCHG(v, cur, new) atomic_cmpxchg_local((v))
 static inline bool atomic_cmpxchg_local(volatile unsigned long *v)
 {
@@ -141,6 +140,8 @@ static inline bool atomic_cmpxchg_local(volatile unsigned long *v)
         ATOMIC_INC(v);
         return true;
 }
+#else
+#define ATOMIC_CMPXCHG(v, cur, new) __sync_val_compare_and_swap((v), cur, new)
 #endif
 #else
 /*

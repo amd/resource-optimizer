@@ -490,8 +490,9 @@ int ibs_op_event(struct bpf_perf_event_data *ctx)
 	return 0;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,19,0)
 SEC("tracepoint/sched/sched_waking")
-int sched_wakeup(struct sched_wakeup *wakeup)
+int save_process_cpu(struct sched_wakeup *wakeup)
 {
         int cpu = 0, node, *nodep = NULL;
         pid_t pid = wakeup->pid;
@@ -512,23 +513,23 @@ int sched_wakeup(struct sched_wakeup *wakeup)
 
 	return 0;
 }
-
+#else
 SEC("kprobe/finish_task_switch")
-int sched_switch(struct pt_regs *ctx)
+int save_process_cpu(struct pt_regs *ctx)
 {
-        pid_t pid, tgid;
+        pid_t pid;
         int cpu = 0, node, *nodep = NULL;
         struct task_struct *task = (void *) PT_REGS_PARM1(ctx);
 
-
-        if (task) {
-                bpf_probe_read(&pid, sizeof(pid), &task->tgid);
-                bpf_probe_read(&tgid, sizeof(tgid), &task->tgid);
-
-                bpf_probe_read(&cpu, sizeof(cpu), &task->cpu);
-        } else {
+        if (!task)
 		return 0;
-        }
+
+	bpf_probe_read(&pid, sizeof(pid), &task->tgid);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,19,0)
+	bpf_probe_read(&cpu, sizeof(cpu), &task->cpu);
+#else
+	bpf_probe_read(&cpu, sizeof(cpu), &task->on_cpu);
+#endif
 
         if (!valid_pid_with_task(pid, task))
                 return 0;
@@ -554,10 +555,8 @@ int sched_switch(struct pt_regs *ctx)
 
         return 0;
 }
+#endif
 
-/*
- * Function/Callback to perform the cleanups upon process termination.
- */
 SEC("tracepoint/sched/sched_process_exit")
 int sched_process_exit(struct sched_exit *exit)
 {
