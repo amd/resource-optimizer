@@ -17,7 +17,7 @@
 #include <bpf/bpf_endian.h>
 #include <linux/perf_event.h>
 #include <bpf/bpf_helpers.h>
-#include "membalancer.h"
+#include "profiler.h"
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -112,7 +112,6 @@ static bool per_numa_latency_stats = false;
 static unsigned long config_done = 0;
 static unsigned int kern_verbose;
 static pid_t my_own_pid;
-static bool user_space_only = false;
 
 static volatile u64 ibs_fetches, ibs_ops;
 unsigned long __atomic_fetch_add_N(volatile u64 *ptr, u64 val, int ordering);
@@ -159,9 +158,6 @@ static void init_function(void)
 			if (valuep != NULL && (*valuep > 0))
 				my_own_pid = *valuep;
 		}
-
-		if (i == USER_SPACE_ONLY)
-			user_space_only = true;
 
 	}
 
@@ -359,15 +355,12 @@ int ibs_fetch_event(struct bpf_perf_event_data *ctx)
 	 */
 	ip = PT_REGS_IP(&ctx->regs);
 
-	if (user_space_only && IBS_KERN_SAMPLE(ip))
-		return 0;
-
 #ifdef MEMB_USE_VA
 	key = init_val.fetch_regs[IBS_FETCH_LINADDR];
 #else
 	key = init_val.fetch_regs[IBS_FETCH_PHYSADDR];
 #endif
-	key &= ~(CCMD_PAGE_SIZE - 1);
+	//key &= ~(CCMD_PAGE_SIZE - 1);
 
 	value = bpf_map_lookup_elem(&ibs_fetch_map, &key);
 	if (value) {
@@ -423,8 +416,6 @@ int ibs_op_event(struct bpf_perf_event_data *ctx)
 		return 0;
 
 	ip = PT_REGS_IP(&ctx->regs);
-	if (user_space_only && IBS_KERN_SAMPLE(ip))
-		return 0;
 
 	/* Collect samples from IBS Fetch registers */
 	kern_ctx = (struct bpf_perf_event_data_kern *)ctx;
@@ -450,7 +441,7 @@ int ibs_op_event(struct bpf_perf_event_data *ctx)
 #else
 	key = init_val.op_regs[IBS_DC_PHYSADDR];
 #endif
-	key &= ~(CCMD_PAGE_SIZE - 1);
+	//key &= ~(CCMD_PAGE_SIZE - 1);
 	value = bpf_map_lookup_elem(&ibs_op_map, &key);
 	if (value) {
 		/*
@@ -473,6 +464,7 @@ int ibs_op_event(struct bpf_perf_event_data *ctx)
 	} else {
 		int i;
 
+		init_val.ip = ip;
 		init_val.data_saved = 0;
 		init_val.count = 1;
 		init_val.tgid = tgid;

@@ -1939,6 +1939,9 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 	if (tier_mode ==  false)
 		set_knob(map_fd[6], PER_NUMA_ACCESS_STATS, 1);
 
+	if (user_space_only)
+		set_knob(map_fd[6], USER_SPACE_ONLY, 1);
+
 	set_knob(map_fd[6], MY_OWN_PID, getpid());
 	set_knob(map_fd[6], KERN_VERBOSE, verbose);
 	set_knob(map_fd[6], LAST_KNOB, 1);

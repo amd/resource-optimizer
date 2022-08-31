@@ -40,7 +40,6 @@ enum balancer_knobs {
 	PER_NUMA_ACCESS_STATS,
 	PER_NUMA_LATENCY_STATS,
 	KERN_VERBOSE,
-	USER_SPACE_ONLY,
 	LAST_KNOB,
 	TOTAL_KNOBS,
 };
@@ -92,6 +91,7 @@ struct value_op {
 	u64 tgid;
 	volatile u32 count;
 	u32 data_saved;
+	u64 ip;
 	u64 op_regs[IBSOP_REG_COUNT];
 	volatile u32 counts[MAX_NUMA_NODES];
 };
@@ -152,6 +152,7 @@ static inline bool atomic_cmpxchg_local(volatile unsigned long *v)
 #define ATOMIC_ADD(v, val) __sync_fetch_and_add((v), val)
 */
 #ifndef atomic_t
+#ifdef __KERNEL__
 typedef struct {
         volatile int counter;
 } atomic_t;
@@ -159,6 +160,7 @@ typedef struct {
 typedef struct {
         volatile long counter;
 } atomic64_t;
+#endif
 
 #define atomic64_read(v) __sync_fetch_and_add(&(v)->counter, 0)
 #define atomic64_add(v, value) __sync_fetch_and_add(&(v)->counter, value)
