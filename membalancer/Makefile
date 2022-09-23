@@ -12,8 +12,7 @@ BIN_NUMA := ${MODULE}_numa.o
 BIN_TIER := ${MODULE}_tier.o
 BIN_TRACER := ${MODULE}_tracer.o
 GETPADDR:= getpaddr.o
-HEAP := heap.o
-LIBS  := ${LIBBPF}/src/libbpf.a -lz -lelf -lnuma -lpthread
+LIBS  := ${LIBBPF}/src/libbpf.so -lz -lelf -lnuma -lpthread
 #DEFS = -DUSE_PAGEMAP
 #DEFS = -DCCMD_SOFTWARE_SAMPLING
 
@@ -63,16 +62,12 @@ getpaddr.o: getpaddr.c
 %_tracer.o: %_tracer.c
 	$(CLANG) -c $<  ${BPF_INCLUDE}
 
-heap.o: heap.c
-	$(CLANG) -c $<  ${BPF_INCLUDE}
-
 %_user.o: %_user.c
 	$(CLANG) \
 	./membalancer_numa.o \
 	./membalancer_tier.o \
         ./membalancer_tracer.o \
         ./getpaddr.o \
-        ./heap.o \
 	$<  ${BPF_INCLUDE} -o ${MODULE} \
 	${LIBS} ${DEFS} -Wall 
 clean:

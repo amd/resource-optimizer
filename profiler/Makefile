@@ -6,7 +6,7 @@ ARCH := $(subst x86_64,x86,$(shell arch))
 MODULE   := profiler
 BIN_KERN := ${MODULE}_kern.o
 BIN_USER := ${MODULE}_user.o
-LIBS  := ${LIBBPF}/src/libbpf.a -lz -lelf -lnuma -lpthread
+LIBS  := ${LIBBPF}/src/libbpf.so -lz -lelf -lnuma -lpthread
 #DEFS = -DCCMD_SOFTWARE_SAMPLING
 
 BPF_INCLUDE := -I. \
@@ -43,6 +43,6 @@ all:   $(BIN_KERN) ${BIN_USER}
 %_user.o: %_user.c
 	$(CLANG) \
 	$<  ${BPF_INCLUDE} -o ${MODULE} \
-	${LIBS} ${DEFS} -Wall -g
+	${LIBS} ${DEFS} -Wall
 clean:
 	rm -f *.o ${MODULE}.o ${MODULE}
