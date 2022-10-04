@@ -8,15 +8,16 @@ BIN_KERN := ${MODULE}_kern.o
 BIN_USER := ${MODULE}_user.o
 LIBS  := ${LIBBPF}/src/libbpf.so -lz -lelf -lnuma -lpthread
 #DEFS = -DCCMD_SOFTWARE_SAMPLING
-
-BPF_INCLUDE := -I. \
+USR_INCLUDE := -I. \
 	-I${KDIR}/tools/perf \
 	-I${KDIR}/tools/lib \
 	-I${KDIR}/tools/testing/selftests/bpf/ \
-	-I${LIBBPF}/include
+	-I${LIBBPF}/include -I../kernel
 
 CLANG_FLAGS = -I. \
 	-include $(KDIR)/include/linux/kconfig.h \
+	-I../kernel \
+	-I$(KDIR)/include \
 	-I$(KDIR)/include \
 	-I$(KDIR)/tools/lib \
 	-I$(KDIR)/include/uapi \
@@ -42,7 +43,7 @@ all:   $(BIN_KERN) ${BIN_USER}
 
 %_user.o: %_user.c
 	$(CLANG) \
-	$<  ${BPF_INCLUDE} -o ${MODULE} \
+	$<  ${USR_INCLUDE} -o ${MODULE} \
 	${LIBS} ${DEFS} -Wall
 clean:
 	rm -f *.o ${MODULE}.o ${MODULE}

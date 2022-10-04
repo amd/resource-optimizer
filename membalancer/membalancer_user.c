@@ -1942,6 +1942,12 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 	if (user_space_only)
 		set_knob(map_fd[6], USER_SPACE_ONLY, 1);
 
+
+
+	/*
+	set_knob(map_fd[6], PER_NUMA_LATENCY_STATS, 1);
+	*/
+	set_knob(map_fd[6], MY_PAGE_SIZE, CCMD_PAGE_SIZE);
 	set_knob(map_fd[6], MY_OWN_PID, getpid());
 	set_knob(map_fd[6], KERN_VERBOSE, verbose);
 	set_knob(map_fd[6], LAST_KNOB, 1);

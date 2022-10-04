@@ -32,6 +32,7 @@
 #include <search.h>
 typedef __u32 u32;
 typedef __u64 u64;
+/*
 #ifndef atomic_t
 typedef struct {
         volatile int counter;
@@ -42,6 +43,7 @@ typedef struct {
 } atomic64_t;
 
 #endif
+*/
 
 #include "profiler.h"
 #include "profiler_utils.h"
