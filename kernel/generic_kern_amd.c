@@ -122,7 +122,7 @@ static void init_function(void)
 {
 	int i, j, *valuep;
 
-	if (ATOMIC_CMPXCHG(&config_done, 0, 1) != 0)
+	if (JUST_ONCE(&config_done, 0, 1) != 0)
 		return;
 
 	for (i = CHECK_PPID; i < TOTAL_KNOBS; i++) {
