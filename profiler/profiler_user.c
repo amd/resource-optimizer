@@ -73,9 +73,12 @@ static int report_frequency = 1;
 
 static char *obj_filename;
 
-static char cmd_args[]  = "f:F:P:p:r:m:M:v:l::uhs";
+static char cmd_args[]  = "A:f:F:P:p:r:m:M:v:l::Luhs";
 static int ibs_fetch_device = -1;
 static int ibs_op_device    = -1;
+
+static unsigned long alignment = 0;
+static bool latency_stats;
 
 #define FETCH_CONFIG        57
 #define FETCH_CONFIG_L3MISS 59
@@ -124,7 +127,10 @@ static void usage(void)
 	       "default %d\n", MEMB_CLOCK);
 	printf("       -u Only user space samples\n");
 	printf("       -F object file for symbols\n");
-	printf("       -M minimum samples. Ignore samples less than this frequency\n");
+	printf("       -M minimum samples. Ignore samples less than\n");
+	printf("          this frequency\n");
+	printf("       -L Collect latency statistics\n");
+	printf("       -A Align Addresses to given value\n");
 	printf("       duration   #  interval in milliseconds, "
 	       "default %d\n", MEMB_INTVL);
 	printf("\n");
@@ -624,6 +630,17 @@ static int get_ibs_fetch_samples(int fd,  __u64 *total_freq)
 		fetch_samples[i].count  = value.count;
 		fetch_samples[i].tgid   = value.tgid;
 
+		{
+			int k;
+
+			for (k = 0; k < MAX_LATENCY_IDX; k++)
+				if (value.latency[k] >= 5)
+					printf("FETCH addr %lx idx %d "
+						"latency %u\n",
+						fetch_samples[i].ip,
+						k, value.latency[k]);
+		}
+
 		if (!IBS_KERN_SAMPLE(fetch_samples[i].ip))
 			snprintf(fetch_samples[i].process,
 				sizeof(fetch_samples[i].process),
@@ -693,19 +710,21 @@ static void print_fetch_statistics_summary(u64 samples)
 	qsort(functions, cnt_functions,
 	      sizeof(struct list_of_functions), fetch_cmp);
 
-	printf("\f\r");
-
-	printf("%-3s %-32s %-10s %-10s %-10s\n",
-		"No", "FUNCTION", "COUNT", "PERCENT", "MODE");
 
 	j = 0;
 
+	printf("\f\r");
 	for (i = 0; i < cnt_functions; i++) {
 		if (functions[i].ref <= 0)
 			continue;
 
 		if (((functions[i].ref * 100) / samples) < 1)
 			continue;
+
+		if (j == 0) {
+			printf("%-3s %-32s %-10s %-10s %-10s\n",
+				"No", "FUNCTION", "COUNT", "PERCENT", "MODE");
+		}
 
 		printf("%-3d %-32s %-10ld %-10ld %-10s\n",
 			++j, 
@@ -725,18 +744,19 @@ static void print_fetch_statistics_detailed(u64 samples)
 	u64 addr, paddr;
 	u64 total;
 	char func[21];
+	bool first = true;
 
 	if (!samples)
 		return;
 
 	qsort(fetch_samples, samples, sizeof(struct ibs_fetch_sample), fetch_cmp);
-	printf("\f\r");
-
-	j = 0;
 
 	total = 0;
+	j = 0;
 	for (i = 0; i < samples; i++)
 		total += fetch_samples[i].count;
+
+	printf("\f\r");
 
 	for (i = 0; i < samples; i++) {
 		if (fetch_samples[i].count == 0)
@@ -750,14 +770,20 @@ static void print_fetch_statistics_detailed(u64 samples)
 		if (user_space_only && (IBS_KERN_SAMPLE(addr)))
 			continue;
 
-		if (j == 0) {
+		if (first) {
 			printf("%-3s %-20s %-20s %-20s %-10s %-10s %-10s %4s\n",
 				"No", "FUNCTION", "VA", "PA", "COUNT", "PERCENT", "MODE", "TYPE");
+			first = false;
 		}
 
 		paddr = fetch_samples[i].fetch_regs[IBS_FETCH_PHYSADDR];
 		pct   = fetch_samples[i].count * 100 / total;
+		if (alignment) {
+			addr  &= ~(alignment -1);
+			paddr &= ~(alignment -1);
+		}
 		snprintf(func, sizeof(func), "%s", get_function_name(addr));
+
 		printf("%-3d %-20s %-20p %-20p %-10d %-10d %-10s %4s\n",
 			++j,
 			func,
@@ -767,6 +793,7 @@ static void print_fetch_statistics_detailed(u64 samples)
 			pct,
 			IBS_KERN_SAMPLE(addr) ? "KERNEL" : "USER",
 			"CODE");
+
 		fetch_samples[i].count = 0;
 	}
 	fflush(stdout);
@@ -786,6 +813,12 @@ static int fetch_cmp(const void *p1, const void *p2)
 
         return s2->count - s1->count;
 }
+
+static void set_knob(int fd, int knob, int value)
+{
+	bpf_map_update_elem(fd, &knob, &value, BPF_NOEXIST);
+}
+
 
 static void process_ibs_fetch_samples(unsigned long total)
 {
@@ -913,11 +946,11 @@ static void print_op_statistics(unsigned long samples)
 	//printf("\f\r");
 
 
-	j = 0;
-
 	total = 0;
 	for (i = 0; i < samples; i++)
 		total += op_samples[i].count;
+
+	j = 0;
 
 	for (i = 0; i < samples; i++) {
 		if (op_samples[i].count == 0)
@@ -938,6 +971,10 @@ static void print_op_statistics(unsigned long samples)
 
 		addr  = op_samples[i].op_regs[IBS_DC_LINADDR];
 		paddr = op_samples[i].op_regs[IBS_DC_PHYSADDR];
+		if (alignment) {
+			addr  &= ~(alignment -1);
+			paddr &= ~(alignment -1);
+		}
 		pct   = op_samples[i].count * 100 / total;
 		snprintf(func, sizeof(func), "%s", get_function_name(ip));
 		printf("%-3d %-20s %-20p %-20p %-10d %-10d %-10s %4s\n",
@@ -1106,6 +1143,12 @@ int main(int argc, char **argv)
 		case 's':
 			summary_report = true;
 			break;
+		case 'A':
+			alignment = atol(optarg);
+			break;
+		case 'L':
+			latency_stats = true;
+			break;
 		default:
 			usage();
 			return -1;
@@ -1229,15 +1272,27 @@ int main(int argc, char **argv)
                 goto cleanup;
         }
 
+	map_fd[6] = bpf_object__find_map_fd_by_name(obj, "knobs");
+        if (map_fd[6] < 0) {
+                fprintf(stderr, "BPF cannot find map knobs\n");
+                goto cleanup;
+        }
+
+
 	err = parse_additional_bpf_programs(obj);
 	if (err) {
 		goto cleanup;
 	}
 	
+	set_knob(map_fd[6], MY_PAGE_SIZE, alignment);
+	if (latency_stats)
+		set_knob(map_fd[6], PER_NUMA_LATENCY_STATS, 1);
+
 	err = launch_additional_bpf_programs();
 	if (err) {
 		goto cleanup;
 	}
+
 
 	//printf("\f");
 	assert(err == 0);

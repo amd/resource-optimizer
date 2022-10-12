@@ -376,20 +376,24 @@ static int int_log2(int value)
 }
 #endif
 
-static inline void save_latency(u32 latency, volatile u32 *latency_arr, bool op)
+static inline void save_latency(u32 latency,
+				volatile u32 latency_arr[MAX_LATENCY_IDX],
+				bool op)
 {
 	int idx;
 
 	idx = int_log2(latency);
-	if (1) {
-                char msg[] = "OP latency %d idx %d op %d";
-                bpf_trace_printk(msg, sizeof(msg), latency, idx, op);
-	}
 
 	if ((idx < 0) || (idx >= MAX_LATENCY_IDX))
                 return;
 
 	ATOMIC_INC(&latency_arr[idx]);
+
+	if (latency_arr[idx] >= 10) {
+                	char msg[] = "OP latency %d ref %u op %d";
+                	bpf_trace_printk(msg, sizeof(msg), latency,
+			         latency_arr[idx], op);
+	}
 }
 
 static void save_fetch_latency(u64 reg, struct value_fetch *valuep)

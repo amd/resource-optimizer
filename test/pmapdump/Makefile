@@ -3,10 +3,10 @@ LIBBPF = /home/skurichi/libbpf
 CLANG ?= clang
 LLC ?= llc
 ARCH := $(subst x86_64,x86,$(shell arch))
-MODULE   := profiler
-BIN_KERN := ${MODULE}_kern.o
-BIN_USER := ${MODULE}_user.o
-LIBS  := ${LIBBPF}/src/libbpf.so -lz -lelf -lnuma -lpthread
+MODULE   := pmapdump
+GETPADDR:= getpaddr.o
+BIN := ${MODULE}.o
+LIBS  := -lm
 #DEFS = -DCCMD_SOFTWARE_SAMPLING
 USR_INCLUDE := -I. \
 	-I${KDIR}/tools/perf \
@@ -35,14 +35,12 @@ CLANG_FLAGS = -I. \
 	-Wno-unknown-warning-option  \
 	-g -O2 -emit-llvm
 
-all:   $(BIN_KERN) ${BIN_USER}
+all:   getpaddr.o pmapdump.o
+getpaddr.o: getpaddr.c
 
-%_kern.o: %_kern.c
-	$(CLANG) $(CLANG_FLAGS) -c $< -o - -Wall| \
-		$(LLC) -march=bpf -mcpu=$(CPU) -filetype=obj -o $@
-
-%_user.o: %_user.c
+pmapdump.o: pmapdump.c
 	$(CLANG) \
+	getpaddr.o \
 	$<  ${USR_INCLUDE} -o ${MODULE} \
 	${LIBS} ${DEFS} -Wall -g
 clean:

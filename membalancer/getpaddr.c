@@ -17,13 +17,10 @@ unsigned long get_physaddr(pid_t pid, unsigned long vaddr)
 {
 	char path[MAXPATHLEN];
 	int fd;
-	char *map;
-	struct stat st;
 	int i;
 	unsigned long offset;
 	unsigned long paddr = 0;
 	char buffer[PHYSADDR_BYTES];
-	char c_buf[PHYSADDR_BYTES];
 
 	snprintf(path, MAXPATHLEN, "/proc/%d/pagemap", pid);
 
