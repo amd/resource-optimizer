@@ -370,6 +370,7 @@ static inline struct value_latency * get_value_latency(u64 seed, int *idx)
 		if (ATOMIC64_READ(&value_latency_free[i]) == 0) {
 			ATOMIC64_SET(&value_latency_free[i], seed);
 			if (ATOMIC64_READ(&value_latency_free[i]) == seed) {
+				ATOMIC64_SET(&value_latency_free[i], 1);
 				*idx = i;
 				return &value_latency_global[i];
 			}
@@ -379,7 +380,7 @@ static inline struct value_latency * get_value_latency(u64 seed, int *idx)
 	return NULL;
 }
 
-static inline void put_value_latency(u64 seed, int idx)
+static inline void put_value_latency(int idx)
 {
 	int i;
 
@@ -429,7 +430,7 @@ static inline void save_latency(u32 lat, u64 key, bool op, int idx)
 
 		ATOMIC_SET(&valuep->idx, 0);
 		bpf_map_update_elem(&latency_map, &key, valuep, BPF_NOEXIST);
-		put_value_latency(seed, i);
+		put_value_latency(i);
 	}
 }
 
