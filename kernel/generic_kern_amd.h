@@ -16,7 +16,7 @@
 #define PROCESSNAMELEN 32
 #define CMW_PAGE_OFFSET 0xffff880000000000
 #define MAX_CPUS 1024
-#define MAX_MAPS 7
+#define MAX_MAPS 8
 #define MAX_NUMA_NODES 8
 #define MAX_PROCESS_CNT 32768
 
@@ -39,7 +39,8 @@ enum balancer_knobs {
 	MY_OWN_PID,
 	MY_PAGE_SIZE,
 	PER_NUMA_ACCESS_STATS,
-	PER_NUMA_LATENCY_STATS,
+	LATENCY_STATS,
+	LATENCY_STATS_L3MISS,
 	KERN_VERBOSE,
 	USER_SPACE_ONLY,
 	LAST_KNOB,
@@ -84,24 +85,26 @@ struct value_data {
 	char buffer[CCMD_PAGE_SIZE];
 };
 
-#define MAX_LATENCY_IDX 16
-
 struct value_fetch {
 	u64 tgid;
-	volatile u32 count;
-	u32 data_saved;
 	u64 fetch_regs[IBSFETCH_REG_COUNT];
 	volatile u32 counts[MAX_NUMA_NODES];
-	volatile u32 latency[MAX_LATENCY_IDX];
+	volatile u32 count;
+	u32 filler;
 };
 
 struct value_op {
 	u64 tgid;
-	volatile u32 count;
-	u32 data_saved;
 	u64 ip;
 	u64 op_regs[IBSOP_REG_COUNT];
 	volatile u32 counts[MAX_NUMA_NODES];
+	volatile u32 count;
+	u32 filler;
+};
+
+#define MAX_LATENCY_IDX 512
+struct value_latency {
+	volatile int idx;
 	volatile u32 latency[MAX_LATENCY_IDX];
 };
 
@@ -140,8 +143,24 @@ struct sched_exit {
 #define ATOMIC_READ(v) (*v)
 */
 #define ATOMIC_INC(v)  __atomic_add_fetch((v), 1, __ATOMIC_SEQ_CST)
-#define ATOMIC_READ(v) atomic64_read((atomic64_t *)(v))
+#define ATOMIC64_READ(v) atomic64_read((atomic64_t *)(v))
+#define ATOMIC_READ(v)   atomic_read((atomic_t *)(v))
+#define ATOMIC_ADD(v, val) __atomic_add_fetch((v), val, __ATOMIC_SEQ_CST)
+#define ATOMIC_SET(v, val) atomic_set((atomic_t *)(v), val)
+#define ATOMIC64_SET(v, val) atomic64_set((atomic64_t *)(v), val)
+
 #if (__clang_major__ < 14)
+#define ATOMIC_INC_RETURN(v) atomic_inc_return_dummy(v)
+static inline u32 atomic_inc_return_dummy(volatile u32 *v)
+{
+	u32 old;
+
+	old = ATOMIC_READ(v);
+	__atomic_add_fetch((v), 1, __ATOMIC_SEQ_CST);
+	return old;
+}
+#define ATOMIC_CMPXCHG(v, cur, new) __sync_val_compare_and_swap((v), cur, new)
+
 #define JUST_ONCE(v, cur, new) just_once(v)
 static inline bool just_once(volatile unsigned long *v)
 {
@@ -151,16 +170,17 @@ static inline bool just_once(volatile unsigned long *v)
 	ATOMIC_INC(v);
 	return 0;
 }
+
 #else
 #define JUST_ONCE(v, cur, new) ATOMIC_CMPXCHG(v, cur, new)
 #define ATOMIC_CMPXCHG(v, cur, new) __sync_val_compare_and_swap((v), cur, new)
+#define ATOMIC_INC_RETURN(v) __atomic_add_fetch((v), 1, __ATOMIC_SEQ_CST)
 #endif
 
 #else
 /*
 #define ATOMIC_READ(v) __sync_fetch_and_add((v), 0)
 #define ATOMIC_INC(v) __sync_fetch_and_add((v), 1)
-#define ATOMIC_ADD(v, val) __sync_fetch_and_add((v), val)
 */
 #ifndef atomic_t
 typedef struct {

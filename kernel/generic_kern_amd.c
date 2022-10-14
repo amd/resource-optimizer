@@ -106,9 +106,17 @@ struct {
         __uint(max_entries, 1);
 } op_counter SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, u64);
+	__type(value, struct value_latency);
+	__uint(max_entries, MAX_IBS_SAMPLES);
+} latency_map SEC(".maps");
+
 static int check_ppid = -1;
 static bool per_numa_access_stats = true;
-static bool per_numa_latency_stats = false;
+static bool latency_stats = false;
+static bool latency_stats_l3miss = false;
 static unsigned long config_done = 0;
 static unsigned int kern_verbose;
 static pid_t my_own_pid;
@@ -149,11 +157,18 @@ static void init_function(void)
 
 		}
 
-		if (i == PER_NUMA_LATENCY_STATS) {
+		if (i == LATENCY_STATS) {
 			if (valuep != NULL && (*valuep == 1))
-				per_numa_latency_stats = true;
+				latency_stats = true;
 			else
-				per_numa_latency_stats = false;
+				latency_stats = false;
+		}
+
+		if (i == LATENCY_STATS_L3MISS) {
+			if (valuep != NULL && (*valuep == 1))
+				latency_stats_l3miss = true;
+			else
+				latency_stats_l3miss = false;
 		}
 
 		if (i == KERN_VERBOSE) {
@@ -184,7 +199,7 @@ static inline void inc_ibs_fetch_samples(void)
 	u64 value;
 
 	ATOMIC_INC(&ibs_fetches);
-	value = ATOMIC_READ(&ibs_fetches);
+	value = ATOMIC64_READ(&ibs_fetches);
         bpf_map_update_elem(&fetch_counter, &key, &value, BPF_ANY);
 }
 
@@ -194,7 +209,7 @@ static inline void inc_ibs_op_samples(void)
 	u64 value;
 
 	ATOMIC_INC(&ibs_ops);
-	value = ATOMIC_READ(&ibs_ops);
+	value = ATOMIC64_READ(&ibs_ops);
         bpf_map_update_elem(&op_counter, &key, &value, BPF_ANY);
 }
 
@@ -289,9 +304,22 @@ static bool valid_pid(pid_t pid)
 	INC_COUNTER(counts, node, 7); \
 	INC_COUNTER(counts, node, MAX_NUMA_NODES-1); \
 
-static void save_node_usage(pid_t pid, volatile u32 *counts)
+static void inc_counters(int node,
+			  volatile u32 counts[MAX_NUMA_NODES])
 {
-	int *nodep, node;
+	int i;
+
+	for (i = 0; i < MAX_NUMA_NODES; i++) {
+		if (i == node)
+			ATOMIC_INC(&counts[i]);
+	}
+}
+
+
+static void save_node_usage(pid_t pid,
+			    volatile u32 counts[MAX_NUMA_NODES])
+{
+	int *nodep;
 
 	if (!per_numa_access_stats)
 		return;
@@ -313,117 +341,127 @@ static void save_node_usage(pid_t pid, volatile u32 *counts)
 	}
 
 
-	node = *nodep;
-
 	/*
-	if (node >=  MAX_NUMA_NODES)
+	if (*nodep >=  MAX_NUMA_NODES)
 		return;
-
-	counts[node]++;
+	ATOMIC_INC(&counts[*nodep]);
 	*/
 
-	INC_8_COUNTERS(counts, node);
+	inc_counters(*nodep, counts);
 }
 
-#ifdef MEMBALANCER_USER_CLZ
-static unsigned int int_log2(unsigned int n)
+#define VALUE_LATENCY_IDX 1024
+static struct value_latency value_latency_global[VALUE_LATENCY_IDX];
+static u64 value_latency_free[VALUE_LATENCY_IDX];
+static inline struct value_latency * get_value_latency(u64 seed, int *idx)
 {
-	unsigned int leading_zeroes;
+	int i;
 
-	if (n <= 0)
-		return n;
-
-	if (n == 1)
-		return 0;
-
-	if (n == 2)
-		return 1;
-
-	leading_zeroes = __builtin_clz(n);
-	/*
-	 * Check if the bit that follows the leading non-zero bit is set it. If
-	 * so, round the result to the next integer by adding 1 to the result.
-	 */
-	n <<= leading_zeroes;
-	n &= (1 << 31);
-
-	if (!n)
-		return sizeof(n) * 8 - leading_zeroes - 1;
-
-	return sizeof(n) * 8 - leading_zeroes;
-}
-#else
-static int int_log2(int value)
-{
-	int i, n;
-
-	n = value;
-
-	i = 0;
-
-	n /= 2;
-	while (n > 0) {
-		i++;
-		n >>= 1;
+	for (i = 0; i < VALUE_LATENCY_IDX; i++) {
+		/*
+		if (ATOMIC64_CMPXCHG(&value_latency_free[i], 0, 1) == 0)
+			return &value_latency_global[i];
+		*/
+		/*
+		 * Workaround in the absence of ATOMIC64_CMPXCHG
+		 * support by LLVM. Reinstate the commented code above
+		 * once compare-and-exchange works.
+		 */
+		if (ATOMIC64_READ(&value_latency_free[i]) == 0) {
+			ATOMIC64_SET(&value_latency_free[i], seed);
+			if (ATOMIC64_READ(&value_latency_free[i]) == seed) {
+				*idx = i;
+				return &value_latency_global[i];
+			}
+		}
 	}
 
-	if (i > 1) {
-		if (((1 << i) + (1 << (i - 1))) < value)
-			i++;
-	}
-
-	return i;
+	return NULL;
 }
-#endif
 
-static inline void save_latency(u32 latency,
-				volatile u32 latency_arr[MAX_LATENCY_IDX],
-				bool op)
+static inline void put_value_latency(u64 seed, int idx)
 {
-	int idx;
+	int i;
 
-	idx = int_log2(latency);
-
-	if ((idx < 0) || (idx >= MAX_LATENCY_IDX))
-                return;
-
-	ATOMIC_INC(&latency_arr[idx]);
-
-	if (latency_arr[idx] >= 10) {
-                	char msg[] = "OP latency %d ref %u op %d";
-                	bpf_trace_printk(msg, sizeof(msg), latency,
-			         latency_arr[idx], op);
+	for (i = 0; i < VALUE_LATENCY_IDX; i++) {
+		if (i == idx) {
+			/*
+			for (j = 0; j < MAX_LATENCY_IDX; j++)
+				value_latency_global[i].latency[j] = 0;
+			*/
+			ATOMIC64_SET(&value_latency_free[i], 0);
+			break;
+		}
 	}
 }
 
-static void save_fetch_latency(u64 reg, struct value_fetch *valuep)
+static inline void save_latency(u32 lat, u64 key, bool op, int idx)
+{
+	int i;
+	u64 seed;
+	struct value_latency *valuep;
+
+	seed = (u64)&valuep;
+	valuep = bpf_map_lookup_elem(&latency_map, &key);
+	if (valuep) {
+		/*
+		if (idx < MAX_LATENCY_IDX)
+			valuep->latency[idx] = lat;
+		*/
+		idx = ATOMIC_READ(&valuep->idx);
+		if (idx >= MAX_LATENCY_IDX)
+			return;
+		for (i = 0; i < MAX_LATENCY_IDX; i++) {
+			if (i == idx) {
+				ATOMIC_SET(&valuep->latency[i], lat);
+				break;
+			}
+		}
+		ATOMIC_INC(&valuep->idx);
+
+	} else {
+		valuep = get_value_latency(seed, &i);
+		if (!valuep) {
+			char msg[] = "Cannot find value for key %p";
+			bpf_trace_printk(msg, sizeof(msg), key);
+			return;
+		}
+
+		ATOMIC_SET(&valuep->idx, 0);
+		bpf_map_update_elem(&latency_map, &key, valuep, BPF_NOEXIST);
+		put_value_latency(seed, i);
+	}
+}
+
+static void save_fetch_latency(u64 reg, u64 addr, int idx)
 {
 	u32 latency;
 
-	if (!per_numa_latency_stats)
+	if (!latency_stats && !latency_stats_l3miss)
 		return;
 
-	if (!IBS_FETCH_LLC_MISS(reg))
+	if (latency_stats_l3miss && !IBS_FETCH_LLC_MISS(reg))
 		return;
 
 	latency = reg >> 32;
 	latency &= (latency << 16) >> 16;
-	save_latency(latency, valuep->latency, false);
+	save_latency(latency, addr, false, idx);
 }
 
-static void save_op_latency(u64 reg, struct value_op *valuep)
+static void save_op_latency(u64 reg, u64 addr, int idx)
 {
 	u32 latency;
 
-	if (!per_numa_latency_stats)
+	if (!latency_stats && !latency_stats_l3miss)
 		return;
 
-	if (!IBS_OP_LLC_MISS(reg))
+	if (latency_stats_l3miss && !IBS_OP_LLC_MISS(reg))
 		return;
 
 	latency = reg >> 32;
 	latency &= (latency << 16) >> 16;
-	save_latency(latency, valuep->latency, true);
+
+	save_latency(latency, addr, true, idx);
 }
 
 SEC("perf_event")
@@ -479,26 +517,25 @@ int ibs_fetch_event(struct bpf_perf_event_data *ctx)
 
 	value = bpf_map_lookup_elem(&ibs_fetch_map, &key);
 	if (value) {
+
+		save_fetch_latency(init_val.fetch_regs[IBS_FETCH_CTL], key,
+				   ATOMIC_READ(&value->count));
 		ATOMIC_INC(&value->count);
-		if (IBS_KERN_SAMPLE(ip) && !value->data_saved) {
-			value->data_saved = 1;
-		}
 
 		save_node_usage(tgid >> 32,  value->counts);
 
 		inc_ibs_fetch_samples();
-		save_fetch_latency(init_val.fetch_regs[IBS_FETCH_CTL], value);
 	} else {
 		int i;
-		init_val.data_saved = 0;
-		init_val.count = 1;
+
+		save_fetch_latency(init_val.fetch_regs[IBS_FETCH_CTL], key, 0);
+
+		ATOMIC_SET(&init_val.count, 1);
 		init_val.tgid = tgid;
+		init_val.filler = 0;
 
 		for (i = 0; i < MAX_NUMA_NODES; i++)
 			init_val.counts[i] = 0;
-
-		for (i = 0; i < MAX_LATENCY_IDX; i++)
-			init_val.latency[i] = 0;
 
 		save_node_usage(tgid >> 32, init_val.counts);
 
@@ -509,8 +546,6 @@ int ibs_fetch_event(struct bpf_perf_event_data *ctx)
 			bpf_map_update_elem(&ibs_fetch_map, &key, &init_val,
 					    BPF_NOEXIST);
 			inc_ibs_fetch_samples();
-			save_fetch_latency(init_val.fetch_regs[IBS_FETCH_CTL],
-					   &init_val);
 		}
 	}
 
@@ -578,30 +613,26 @@ int ibs_op_event(struct bpf_perf_event_data *ctx)
 		}
 		*/
 
+		save_op_latency(init_val.op_regs[IBS_OP_DATA3], key,
+				ATOMIC_READ(&value->count));
 		ATOMIC_INC(&value->count);
-		if (IBS_KERN_SAMPLE(ip) && !value->data_saved) {
-			value->data_saved = 1;
-		}
 		save_node_usage(tgid >> 32, value->counts);
-		save_op_latency(value->op_regs[IBS_OP_DATA3], value);
 		/*
 		inc_ibs_op_samples();
 		*/
 	} else {
 		int i;
 
-		init_val.data_saved = 0;
-		init_val.count = 1;
+		save_op_latency(init_val.op_regs[IBS_OP_DATA3], key, 0);
+
+		ATOMIC_SET(&init_val.count, 1);
 		init_val.tgid = tgid;
 		init_val.ip = ip;
+		init_val.filler = 0;
+
 
 		for (i = 0; i < MAX_NUMA_NODES; i++)
 			init_val.counts[i] = 0;
-
-		for (i = 0; i < MAX_LATENCY_IDX; i++)
-			init_val.latency[i] = 0;
-
-
 
 		save_node_usage(tgid >> 32, init_val.counts);
 		/*
@@ -622,9 +653,6 @@ int ibs_op_event(struct bpf_perf_event_data *ctx)
 			bpf_map_update_elem(&ibs_op_map, &key, &init_val,
 					    BPF_NOEXIST);
 			inc_ibs_op_samples();
-			save_op_latency(init_val.op_regs[IBS_OP_DATA3],
-					&init_val);
-
 		}
 	}
 	

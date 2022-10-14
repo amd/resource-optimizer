@@ -73,12 +73,12 @@ static int report_frequency = 1;
 
 static char *obj_filename;
 
-static char cmd_args[]  = "A:f:F:P:p:r:m:M:v:l::Luhs";
+static char cmd_args[]  = "A:f:F:P:p:r:m:M:v:l::L:uhs";
 static int ibs_fetch_device = -1;
 static int ibs_op_device    = -1;
 
 static unsigned long alignment = 0;
-static bool latency_stats;
+static int latency_stats = -1;
 
 #define FETCH_CONFIG        57
 #define FETCH_CONFIG_L3MISS 59
@@ -630,17 +630,6 @@ static int get_ibs_fetch_samples(int fd,  __u64 *total_freq)
 		fetch_samples[i].count  = value.count;
 		fetch_samples[i].tgid   = value.tgid;
 
-		{
-			int k;
-
-			for (k = 0; k < MAX_LATENCY_IDX; k++)
-				if (value.latency[k] >= 5)
-					printf("FETCH addr %lx idx %d "
-						"latency %u\n",
-						fetch_samples[i].ip,
-						k, value.latency[k]);
-		}
-
 		if (!IBS_KERN_SAMPLE(fetch_samples[i].ip))
 			snprintf(fetch_samples[i].process,
 				sizeof(fetch_samples[i].process),
@@ -735,21 +724,68 @@ static void print_fetch_statistics_summary(u64 samples)
 
 		functions[i].ref = 0;
 	}
+	if (j)
+		printf("\n");
 
 }
 
-static void print_fetch_statistics_detailed(u64 samples)
+static int cmp_latency(const void *p1, const void *p2)
+{
+        const u32 s1 = *(u32 *)p1, s2 = *(u32 *)p2;
+
+        return s1 - s2;
+}
+
+static u32 latency_pertcile(struct value_latency *value, u32 count, float p)
+{
+	u32 i;
+
+	i = (count * p) / 100;
+
+	return value->latency[i];
+}
+
+static int process_latency_metrics(int fd, u64 key, u32 *count,
+				   struct value_latency *value)
+{
+	memset(value, 0, sizeof(*value));
+	if (bpf_map_lookup_elem(fd, &key, value))
+		return -ENOENT;
+
+	*count = value->idx;
+
+	if (*count) {
+		qsort((void *)value->latency, *count, sizeof(u32),
+		      cmp_latency);
+	}
+
+	return 0;
+}
+
+static void delete_latency_metrics(int fd)
+{
+	u64 key, next_key;
+
+	while (bpf_map_get_next_key(fd, &key, &next_key) == 0) {
+		key = next_key;
+		bpf_map_delete_elem(fd, &next_key);
+	}
+}
+
+static void print_fetch_statistics_detailed(int latency_fd, u64 samples)
 {
 	int i, j, pct;
 	u64 addr, paddr;
 	u64 total;
 	char func[21];
-	bool first = true;
+	struct value_latency value;
+	u32 count;
 
 	if (!samples)
 		return;
 
-	qsort(fetch_samples, samples, sizeof(struct ibs_fetch_sample), fetch_cmp);
+	qsort(fetch_samples, samples, sizeof(struct ibs_fetch_sample),
+		fetch_cmp);
 
 	total = 0;
 	j = 0;
@@ -770,10 +806,24 @@ static void print_fetch_statistics_detailed(u64 samples)
 		if (user_space_only && (IBS_KERN_SAMPLE(addr)))
 			continue;
 
-		if (first) {
-			printf("%-3s %-20s %-20s %-20s %-10s %-10s %-10s %4s\n",
-				"No", "FUNCTION", "VA", "PA", "COUNT", "PERCENT", "MODE", "TYPE");
-			first = false;
+		if (j == 0) {
+			printf("%-3s %-20s %-14s %-14s %-7s %-7s %-5s %4s ",
+				"No", "FUNCTION", "VA", "PA", "COUNT",
+				"PERCENT", "MODE", "TYPE");
+			if (latency_stats < 0)
+				printf("\n");
+			else
+				printf("%-10s %-10s %-10s %-10s %-10s %-10s "
+					"%-10s %-10s\n",
+					"LAT_MIN",
+					"LAT_MED",
+					"LAT_MAX",
+					"LAT_P90",
+					"LAT_P95",
+					"LAT_P99",
+					"LAT_P99.9",
+					"LAT_P99.99");
+
 		}
 
 		paddr = fetch_samples[i].fetch_regs[IBS_FETCH_PHYSADDR];
@@ -784,7 +834,7 @@ static void print_fetch_statistics_detailed(u64 samples)
 		}
 		snprintf(func, sizeof(func), "%s", get_function_name(addr));
 
-		printf("%-3d %-20s %-20p %-20p %-10d %-10d %-10s %4s\n",
+		printf("%-3d %-20s %-14p %-14p %-7d %-7d %-5s %4s",
 			++j,
 			func,
 			(void *)addr,
@@ -794,17 +844,44 @@ static void print_fetch_statistics_detailed(u64 samples)
 			IBS_KERN_SAMPLE(addr) ? "KERNEL" : "USER",
 			"CODE");
 
+		count = (fetch_samples[i].count > MAX_LATENCY_IDX) ? 
+				MAX_LATENCY_IDX :
+				fetch_samples[i].count;
+
+		if (!process_latency_metrics(latency_fd, paddr,
+						     &count, &value)) {
+			if (count > 22) {
+				printf(" %-10u %-10u %-10u "
+					"%-10u %-10u %-10u %-10u %-10u",
+					value.latency[0],
+					value.latency[count / 2],
+					value.latency[count - 1],
+					latency_pertcile(&value, count, 90.0),
+					latency_pertcile(&value, count, 95.0),
+					latency_pertcile(&value, count, 99.0),
+					latency_pertcile(&value, count, 99.9),
+					latency_pertcile(&value, count, 99.99));
+			}
+			printf("\n");
+		} else {
+			printf("\n");
+		}
+
 		fetch_samples[i].count = 0;
 	}
+
+	if (j)
+		printf("\n");
+
 	fflush(stdout);
 }
 
-static void print_fetch_statistics(u64 samples)
+static void print_fetch_statistics(int latency_fd, u64 samples)
 {
 	if (summary_report)
 		print_fetch_statistics_summary(samples);
 	else
-		print_fetch_statistics_detailed(samples);
+		print_fetch_statistics_detailed(latency_fd, samples);
 }
 
 static int fetch_cmp(const void *p1, const void *p2)
@@ -820,7 +897,7 @@ static void set_knob(int fd, int knob, int value)
 }
 
 
-static void process_ibs_fetch_samples(unsigned long total)
+static void process_ibs_fetch_samples(int latency_fd, unsigned long total)
 {
 	unsigned long i;
 	u64 addr, samples = 0;
@@ -843,7 +920,7 @@ static void process_ibs_fetch_samples(unsigned long total)
 		*/
 	}
 
-	print_fetch_statistics(samples);
+	print_fetch_statistics(latency_fd, samples);
 }
 
 static int op_cmp(const void *p1, const void *p2)
@@ -932,19 +1009,19 @@ static int get_ibs_op_samples(int fd, __u64 *total_freq)
 	return max;
 }
 
-static void print_op_statistics(unsigned long samples)
+static void print_op_statistics(int latency_fd, unsigned long samples)
 {
 	int i, j, pct;
 	u64 addr, paddr, ip;
 	u64 total;
 	char func[21];
+	struct value_latency value;
+	u32 count;
 
 	if (!samples)
 		return;
 
 	qsort(op_samples, samples, sizeof(struct ibs_op_sample), op_cmp);
-	//printf("\f\r");
-
 
 	total = 0;
 	for (i = 0; i < samples; i++)
@@ -965,8 +1042,24 @@ static void print_op_statistics(unsigned long samples)
 			continue;
 
 		if (j == 0) {
-			printf("%-3s %-20s %-20s %-20s %-10s %-10s %-10s %4s\n",
-				"No", "FUNCTION", "VA", "PA", "COUNT", "PERCENT", "MODE", "TYPE");
+			printf("%-3s %-20s %-14s %-14s %-7s %-7s %-5s %4s",
+				"No", "FUNCTION", "VA", "PA", "COUNT",
+				"PERCENT", "MODE", "TYPE");
+
+			if (latency_stats < 0)
+				printf("\n");
+			else
+				printf(" %-10s %-10s %-10s %-10s %-10s %-10s"
+					"%-10s %-10s\n",
+					"LAT_MIN",
+					"LAT_MED",
+					"LAT_MAX",
+					"LAT_P90",
+					"LAT_P95",
+					"LAT_P99",
+					"LAT_P99.9",
+					"LAT_P99.99");
+
 		}
 
 		addr  = op_samples[i].op_regs[IBS_DC_LINADDR];
@@ -975,9 +1068,10 @@ static void print_op_statistics(unsigned long samples)
 			addr  &= ~(alignment -1);
 			paddr &= ~(alignment -1);
 		}
+
 		pct   = op_samples[i].count * 100 / total;
 		snprintf(func, sizeof(func), "%s", get_function_name(ip));
-		printf("%-3d %-20s %-20p %-20p %-10d %-10d %-10s %4s\n",
+		printf("%-3d %-20s %-14p %-14p %-7d %-7d %-5s %4s",
 			++j,
 			func,
 			(void *)addr,
@@ -987,12 +1081,39 @@ static void print_op_statistics(unsigned long samples)
 			IBS_KERN_SAMPLE(ip) ? "KERNEL" : "USER",
 			"DATA");
 
+		count = (op_samples[i].count > MAX_LATENCY_IDX) ? 
+				MAX_LATENCY_IDX :
+				op_samples[i].count;
+
+		if (!process_latency_metrics(latency_fd, paddr,
+						     &count, &value)) {
+			if (count > 2) {
+				printf(" %-10u %-10u %-10u "
+					"%-10u %-10u %-10u %-10u %-10u",
+					value.latency[0],
+					value.latency[count / 2],
+					value.latency[count - 1],
+					latency_pertcile(&value, count, 90.0),
+					latency_pertcile(&value, count, 95.0),
+					latency_pertcile(&value, count, 99.0),
+					latency_pertcile(&value, count, 99.9),
+					latency_pertcile(&value, count, 99.99));
+			}
+			printf("\n");
+
+		} else {
+			printf("\n");
+		}
+
 		op_samples[i].count = 0;
 	}
+
+	if (j)
+		printf("\n");
 	fflush(stdout);
 }
 
-static void process_ibs_op_samples(unsigned long total)
+static void process_ibs_op_samples(int latency_fd, unsigned long total)
 {
 	if(summary_report)
 		return;
@@ -1002,7 +1123,7 @@ static void process_ibs_op_samples(unsigned long total)
 
 	qsort(op_samples, total, sizeof(struct ibs_op_sample), op_cmp);
 
-	print_op_statistics(total);
+	print_op_statistics(latency_fd, total);
 }
 
 static int parse_additional_bpf_programs(struct bpf_object *bpfobj)
@@ -1053,20 +1174,22 @@ static int terminate_additional_bpf_programs(void)
         return 0;
 }
 
-static void process_samples(int fetch_fd, int op_fd)
+static void process_samples(int fetch_fd, int op_fd, int latency_fd)
 {
 	u64 fetch_cnt, op_cnt, total_freq_fetch, total_freq_op;
 
 	fetch_cnt = get_ibs_fetch_samples(fetch_fd, &total_freq_fetch);
 	if (fetch_cnt) {
-		process_ibs_fetch_samples(total_freq_fetch);
+		process_ibs_fetch_samples(latency_fd, total_freq_fetch);
 	}
 
 	op_cnt = get_ibs_op_samples(op_fd, &total_freq_op);
 	if (op_cnt) {
-		process_ibs_op_samples(total_freq_op);
+		process_ibs_op_samples(latency_fd, total_freq_op);
 	}
 
+	if (fetch_cnt || op_cnt)
+		delete_latency_metrics(latency_fd);
 }
 
 int main(int argc, char **argv)
@@ -1147,7 +1270,12 @@ int main(int argc, char **argv)
 			alignment = atol(optarg);
 			break;
 		case 'L':
-			latency_stats = true;
+			latency_stats = atoi(optarg);
+			if ((latency_stats != 0) && (latency_stats != 3)) {
+				usage();
+				return -1;
+			}
+
 			break;
 		default:
 			usage();
@@ -1278,15 +1406,23 @@ int main(int argc, char **argv)
                 goto cleanup;
         }
 
+	map_fd[7] = bpf_object__find_map_fd_by_name(obj, "latency_map");
+        if (map_fd[7] < 0) {
+                fprintf(stderr, "BPF cannot find map latency_map\n");
+                goto cleanup;
+        }
+
 
 	err = parse_additional_bpf_programs(obj);
 	if (err) {
 		goto cleanup;
 	}
-	
+
 	set_knob(map_fd[6], MY_PAGE_SIZE, alignment);
-	if (latency_stats)
-		set_knob(map_fd[6], PER_NUMA_LATENCY_STATS, 1);
+	if (latency_stats == 0)
+		set_knob(map_fd[6], LATENCY_STATS, 1);
+	else if (latency_stats == 3)
+		set_knob(map_fd[6], LATENCY_STATS_L3MISS, 1);
 
 	err = launch_additional_bpf_programs();
 	if (err) {
@@ -1324,7 +1460,7 @@ int main(int argc, char **argv)
 		if (op_links)
 			ibs_sampling_end(op_links);    /* IBS op */
 
-		process_samples(map_fd[0], map_fd[1]);
+		process_samples(map_fd[0], map_fd[1], map_fd[7]);
 	}
 
 cleanup:
