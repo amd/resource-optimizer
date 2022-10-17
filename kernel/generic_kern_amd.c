@@ -279,42 +279,29 @@ static bool valid_pid(pid_t pid)
 	return valid_pid_with_task(pid, NULL);
 }
 
-#if 1
-#define INC_COUNTER(counts, node, i) \
-	if (node == i)  {    \
-		ATOMIC_INC(&counts[i]); \
-		return;      \
-	}
-#else
-#define INC_COUNTER(counts, node, i) \
-	if (node == i)  {    \
-		counts[i]++; \
-		return;      \
-	}
-#endif
-
-#define INC_8_COUNTERS(counts, node) \
-	INC_COUNTER(counts, node, 0); \
-	INC_COUNTER(counts, node, 1); \
-	INC_COUNTER(counts, node, 2); \
-	INC_COUNTER(counts, node, 3); \
-	INC_COUNTER(counts, node, 4); \
-	INC_COUNTER(counts, node, 5); \
-	INC_COUNTER(counts, node, 6); \
-	INC_COUNTER(counts, node, 7); \
-	INC_COUNTER(counts, node, MAX_NUMA_NODES-1); \
-
 static void inc_counters(int node,
 			  volatile u32 counts[MAX_NUMA_NODES])
 {
 	int i;
 
 	for (i = 0; i < MAX_NUMA_NODES; i++) {
-		if (i == node)
+
+		if (i == node) { 
 			ATOMIC_INC(&counts[i]);
+			/*break*/
+		}
+
+		/*
+		 * BPF runtime check puzzle.
+		 * Unable to place break into the previous if statement.
+		 * Or else attempts to run the program fails with error
+		 * "variable stack access var_off"
+		 */
+		if (i >= node) {
+			break;
+		}
 	}
 }
-
 
 static void save_node_usage(pid_t pid,
 			    volatile u32 counts[MAX_NUMA_NODES])
