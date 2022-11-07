@@ -27,6 +27,7 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -53,9 +54,10 @@
 #include <sys/time.h>
 #include <signal.h>
 #include <sys/wait.h>
-
-#define __USE_GNU
+#include <ctype.h>
 #include <search.h>
+#include <sched.h>
+
 typedef __u32 u32;
 typedef __u64 u64;
 
@@ -95,7 +97,7 @@ static unsigned int min_ibs_samples = MIN_IBS_CLASSIC_SAMPLES;
 static int migration_timeout_sec = 20;
 static int min_migrated_pages = MIN_MIGRATED_PAGES;
 
-static char cmd_args[]  = "f:P:p:r:m:M:v:U:T:t:D:L:B:uhcbHVl";
+static char cmd_args[]  = "c:f:P:p:r:m:M:v:U:T:t:D:L:B:uhcbHVl";
 static int ibs_fetch_device = -1;
 static int ibs_op_device    = -1;
 #define FETCH_CONFIG        57
@@ -191,6 +193,8 @@ static void usage(const char *cmd)
 			MEMB_CLOCK);
 	printf("       -p <pid> Process ID to be tracked\n");
 	printf("       -P <pid> Parent Process ID to be tracked\n");
+	printf("       -c list of cpus to collect samples on <comma separated"
+			"or range with hyphen>\n");
 	printf("       -u Only user space samples\n");
 	printf("       -h help, displays this information\n");
 	printf("       -H show histograms\n");
@@ -230,6 +234,10 @@ static void usage(const char *cmd)
 	printf("3. Example for memory access tracer or pattern analyzer\n");
 	printf("%s -f 25 -u -P 99053 -v1 -m 0.0001 -M 1 -r 2 1000 -L /tmp/ \n",
 		cmd);
+	printf("4. Example for list of cpus\n");
+	printf("%s -u -P 99053 -c 1,2,3,10-20,30-40\n",
+		cmd);
+
 }
 
 static int get_ibs_device_type(const char *dev)
@@ -349,11 +357,113 @@ static bool is_cpu_online(int cpu)
 	return online;
 }
 
-static int perf_sampling_begin(int freq, struct bpf_program *prog,
-				struct bpf_link *links[])
+static const char *next_token(const char *q,  int sep)
 {
-	int i, pmu_fd;
+	q = strchr(q, sep);
+	if (q)
+		q++;
 
+	return q;
+}
+
+static int next_number(const char *str, char **end, unsigned int *result)
+{
+	unsigned int ret;
+	errno = 0;
+	if (str == NULL || *str == '\0' || !isdigit(*str))
+		return -EINVAL;
+
+	ret = (unsigned int) strtoul(str, end, 10);
+	if (errno)
+		return -errno;
+	if (str == *end)
+		return -EINVAL;
+
+	*result = ret;
+
+	return 0;
+}
+
+static int attach_perfevent(cpu_set_t *cpusetp, struct bpf_link *links[],
+		struct bpf_program *prog, struct perf_event_attr *perf) {
+	int pmu_fd;
+	int cpu = 0;
+
+	while( cpu < nr_cpus ) {
+
+		if(!CPU_ISSET(cpu, cpusetp)) {
+			cpu++;
+			continue;
+		}
+		pmu_fd = sys_perf_event_open(perf, -1, cpu, -1, 0);
+		if (pmu_fd < 0) {
+			fprintf(stderr, "Cannot arm software sampling\n");
+			return 1;
+		}
+		links[cpu] = bpf_program__attach_perf_event(prog, pmu_fd);
+		if (libbpf_get_error(links[cpu])) {
+			fprintf(stderr, "ERROR: Attach perf event\n");
+			links[cpu] = NULL;
+			close(pmu_fd);
+			return 1;
+		}
+		cpu++;
+	}
+	return 0;
+}
+
+static int parse_cpulist(const char* cpu_list, cpu_set_t *cpusetp,
+		size_t set_size)
+{
+	const char *p, *q;
+	char *end = NULL;
+	unsigned int from; /* start of range */
+	unsigned int to; /* end of range */
+	const char *c1,*c2;
+	int err;
+
+
+	q = cpu_list;
+	p = q;
+	while (p) {
+		q = next_token(q,',');
+		err = next_number(p, &end, &from);
+		if (err)
+			return err;
+		to = from;
+		p = end;
+
+		c1 = next_token(p, '-');
+		c2 = next_token(p, ',');
+
+		if (c1 != NULL && (c2 == NULL || c1 < c2)) {
+			err = next_number(c1, &end, &to);
+			if (err)
+				return err;
+		}
+		if (from > to)
+			return -EINVAL;
+
+		while (from <= to) {
+			if (from >= nr_cpus)
+				return -EINVAL;
+			if (!is_cpu_online(from)) {
+				from++;
+				continue;
+			}
+			CPU_SET_S(from, set_size, cpusetp);
+			from++;
+		}
+		p = q;
+	}
+
+	return 0;
+}
+
+static int perf_sampling_begin(int freq, struct bpf_program *prog,
+				struct bpf_link *links[],
+				cpu_set_t *cpusetp)
+{
 	struct perf_event_attr perf = {
 		.freq = 1,
 		.type = PERF_TYPE_SOFTWARE,
@@ -379,34 +489,17 @@ static int perf_sampling_begin(int freq, struct bpf_program *prog,
 		.read_format = 0,
 	};
 
-	for (i = 0; i < nr_cpus; i++) {
-		if (!is_cpu_online(i)) {
-			links[i] = NULL;
-			continue;
-		}
-
-		pmu_fd = sys_perf_event_open(&perf, -1, i, -1, 0);
-		if (pmu_fd < 0) {
-			fprintf(stderr, "Cannot arm software sampling\n");
-			return 1;
-		}
-		links[i] = bpf_program__attach_perf_event(prog, pmu_fd);
-		if (libbpf_get_error(links[i])) {
-			fprintf(stderr, "ERROR: Attach perf event\n");
-			links[i] = NULL;
-			close(pmu_fd);
-			return 1;
-		}
+	if (attach_perfevent(cpusetp, links, prog, &perf)){
+		return 1;
 	}
 
 	return 0;
 }
 
 static int ibs_fetch_sampling_begin(int freq, struct bpf_program *prog,
-				    struct bpf_link *links[])
+				    struct bpf_link *links[],
+				    cpu_set_t *cpusetp)
 {
-	int i, pmu_fd;
-
 	struct perf_event_attr ibs_fetch = {
 		.freq = 1,
 		.type = ibs_fetch_device,
@@ -439,26 +532,8 @@ static int ibs_fetch_sampling_begin(int freq, struct bpf_program *prog,
 	if (ibs_fetch_device < 0)
 		return -1;
 
-	for (i = 0; i < nr_cpus; i++) {
-		if (!is_cpu_online(i)) {
-			links[i] = NULL;
-			continue;
-		}
-
-		pmu_fd = sys_perf_event_open(&ibs_fetch, -1, i, -1, 0);
-		if (pmu_fd < 0) {
-			fprintf(stderr, "Cannot arm IBS FETCH sampling\n");
-			return 1;
-		}
-
-		links[i] = bpf_program__attach_perf_event(prog, pmu_fd);
-		if (libbpf_get_error(links[i])) {
-
-			fprintf(stderr, "ERROR: Attach perf event\n");
-			links[i] = NULL;
-			close(pmu_fd);
-			return 1;
-		}
+	if (attach_perfevent(cpusetp, links, prog, &ibs_fetch)){
+		return 1;
 	}
 
 	return 0;
@@ -467,11 +542,14 @@ static int ibs_fetch_sampling_begin(int freq, struct bpf_program *prog,
 static void ibs_sampling_end(struct bpf_link *links[])
 {
 	int i;
+	int pmu_fd;
 
 	for (i = 0; i < nr_cpus; i++) {
 		if (links[i] == NULL)
 			continue;
 
+		pmu_fd = bpf_link__fd(links[i]);
+		close(pmu_fd);
 		bpf_link__destroy(links[i]);
 		links[i] = NULL;
 	}
@@ -487,10 +565,9 @@ static void ibs_fetchop_config_set(void)
 
 
 int ibs_op_sampling_begin(int freq, struct bpf_program *prog,
-				struct bpf_link *links[])
+				struct bpf_link *links[],
+				cpu_set_t *cpusetp)
 {
-	int i, pmu_fd;
-
 	struct perf_event_attr ibs_op  = {
 		.freq = 1,
 		.type = ibs_op_device,
@@ -519,25 +596,8 @@ int ibs_op_sampling_begin(int freq, struct bpf_program *prog,
 	if (ibs_op_device < 0)
 		return -1;
 
-	for (i = 0; i < nr_cpus; i++) {
-		if (!is_cpu_online(i)) {
-			links[i] = NULL;
-			continue;
-		}
-
-		pmu_fd = sys_perf_event_open(&ibs_op, -1, i, -1, 0);
-		if (pmu_fd < 0) {
-			fprintf(stderr, "Cannot arm IBS OP sampling\n");
-			return 1;
-		}
-
-		links[i] = bpf_program__attach_perf_event(prog, pmu_fd);
-		if (libbpf_get_error(links[i])) {
-			fprintf(stderr, "ERROR: Attach perf event\n");
-			links[i] = NULL;
-			close(pmu_fd);
-			return 1;
-		}
+	if (attach_perfevent(cpusetp, links, prog, &ibs_op)){
+		return 1;
 	}
 
 	return 0;
@@ -1850,7 +1910,8 @@ static void set_knob(int fd, int knob, int value)
 
 
 static int balancer_function_int(const char *kernobj, int freq, int msecs,
-				 char  *include_pids, char *include_ppids)
+				 char  *include_pids, char *include_ppids,
+				 cpu_set_t *cpusetp)
 {
 	int msecs_nap;
 	int err = -1;
@@ -1866,7 +1927,6 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 	unsigned long ibs_samples_old = 0, pages_migrated_old = 0;
 	struct timeval start;
 
-	nr_cpus = sysconf(_SC_NPROCESSORS_ONLN);
 	fetch_links = calloc(nr_cpus, sizeof(struct bpf_link *));
 	if (!fetch_links) {
 		fprintf(stderr, "ERROR: malloc of links\n");
@@ -2013,7 +2073,7 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 
 	while (!err) {
 
-		if (ibs_op_sampling_begin(freq, prog[1], op_links) != 0) {
+		if (ibs_op_sampling_begin(freq, prog[1], op_links, cpusetp) != 0) {
 			if (l3miss)
 				fprintf(stderr,
 					"IBS OP L3 miss fitlering "
@@ -2023,7 +2083,7 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 					"IBS OP sampling not supported\n");
 		}
 
-		if (ibs_fetch_sampling_begin(freq, prog[0], fetch_links) != 0) {
+		if (ibs_fetch_sampling_begin(freq, prog[0], fetch_links, cpusetp) != 0) {
 			if (l3miss)
 				fprintf(stderr,
 					"IBS Fetch L3 miss filtering "
@@ -2033,7 +2093,7 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 				fprintf(stderr,
 					"IBS Fetch sampling not supported\n");
 
-			if (perf_sampling_begin(freq, prog[2], perf_links) != 0)
+			if (perf_sampling_begin(freq, prog[2], perf_links, cpusetp) != 0)
 				goto cleanup;
 
 		}
@@ -2119,11 +2179,11 @@ cleanup:
 }
 
 static int balancer_function(const char *kernobj, int freq, int msecs,
-			     char *include_pids, char *include_ppids)
+			     char *include_pids, char *include_ppids, cpu_set_t *cpusetp)
 {
 	if (trace_dir) {
 		 return balancer_function_int(kernobj, freq, msecs,
-				 	      include_pids, include_ppids);
+					include_pids, include_ppids, cpusetp);
 	}
 
 	/*
@@ -2140,7 +2200,7 @@ static int balancer_function(const char *kernobj, int freq, int msecs,
 	pid = fork();
 	if (pid == 0) {
 		status = balancer_function_int(kernobj, freq, msecs,
-		       			       include_pids, include_ppids);
+					include_pids, include_ppids, cpusetp);
 		exit(status);
 	}
 
@@ -2151,7 +2211,8 @@ static int balancer_function(const char *kernobj, int freq, int msecs,
 
 	return -EINVAL;
 #else
-	return balancer_function_int(kernobj, freq, msecs);
+	return balancer_function_int(kernobj, freq, msecs
+			include_pids, include_ppids, cpusetp);
 #endif
 }
 
@@ -2166,6 +2227,12 @@ int main(int argc, char **argv)
 	char *tier_args = NULL;
 	char *include_pids = NULL;
 	char *include_ppids = NULL;
+	char *include_cpus = NULL;
+	char buffer[256];
+	cpu_set_t *cpusetp;
+	size_t size;
+
+	nr_cpus = sysconf(_SC_NPROCESSORS_ONLN);
 
         if (setrlimit(RLIMIT_MEMLOCK, &r)) {
                 perror("setrlimit(RLIMIT_MEMLOCK)");
@@ -2235,6 +2302,9 @@ int main(int argc, char **argv)
 				return -1;
 			}
 			break;
+		case 'c':
+			include_cpus = optarg;
+			break;
 		case 'v':
 			verbose = atoi(optarg);
 			break;
@@ -2294,19 +2364,38 @@ int main(int argc, char **argv)
 			return err;
 	}
 
-	open_ibs_devices();
-#if 0
-	/* initialize kernel symbol translation */
-	if (load_kallsyms()) {
-		fprintf(stderr, "ERROR: loading /proc/kallsyms\n");
-		return -EINVAL;
+	if (!include_cpus) {
+		/*
+		 * Perf event will be attached to all the cpus by default
+		 */
+		snprintf(buffer, sizeof(buffer), "%d-%d", 0, nr_cpus - 1);
+		include_cpus = buffer;
 	}
-#endif
+
+	cpusetp = CPU_ALLOC(nr_cpus);
+	if (cpusetp == NULL) {
+		perror("CPU_ALLOC");
+		exit(EXIT_FAILURE);
+	}
+	size = CPU_ALLOC_SIZE(nr_cpus);
+	CPU_ZERO_S(size, cpusetp);
+	if (include_cpus) {
+		err = parse_cpulist(include_cpus, cpusetp, size);
+		if (err) {
+			usage(argv[0]);
+			CPU_FREE(cpusetp);
+			return err;
+		}
+	}
+
+	open_ibs_devices();
 
 	do {
 		err = balancer_function(argv[0], freq, msecs,
-					include_pids, include_ppids);
+					include_pids, include_ppids, cpusetp);
 	}  while(err == ETIMEDOUT);
+
+	CPU_FREE(cpusetp);
 
 	return err;
 }
