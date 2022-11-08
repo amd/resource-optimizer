@@ -1,8 +1,21 @@
 /*
+ * Copyright (C) 2022 Advanced Micro Devices, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
  * IBS sampler : Arm IBS fetch and op sampling, collect both kernel and
  * process samples.
- *
- * Copyright 2022 AMD, Inc.
  */
 #include <linux/version.h>
 #include <bpf/bpf_tracing.h>
@@ -10,11 +23,6 @@
 #include <uapi/linux/bpf.h>
 #include <uapi/linux/bpf_perf_event.h>
 #include <bpf/bpf_helpers.h>
-#include <uapi/linux/if_ether.h>
-#include <uapi/linux/if_packet.h>
-#include <uapi/linux/ip.h>
-#include <uapi/linux/socket.h>
-#include <bpf/bpf_endian.h>
 #include <linux/perf_event.h>
 #include <bpf/bpf_helpers.h>
 #include <generic_kern_amd.h>
@@ -124,7 +132,6 @@ static bool user_space_only = false;
 static unsigned long my_page_size;
 
 static volatile u64 ibs_fetches, ibs_ops;
-unsigned long __atomic_fetch_add_N(volatile u64 *ptr, u64 val, int ordering);
 
 static void init_function(void)
 {
@@ -340,31 +347,38 @@ static void save_node_usage(pid_t pid,
 #define VALUE_LATENCY_IDX 1024
 static struct value_latency value_latency_global[VALUE_LATENCY_IDX];
 static u64 value_latency_free[VALUE_LATENCY_IDX];
-static inline struct value_latency * get_value_latency(u64 seed, int *idx)
+static inline struct value_latency * get_value_latency(unsigned int *idx)
 {
-	int i;
+	unsigned int i;
 
+#if (__clang_major__ >= 14)
 	for (i = 0; i < VALUE_LATENCY_IDX; i++) {
-		/*
-		if (ATOMIC64_CMPXCHG(&value_latency_free[i], 0, 1) == 0)
+		if (ATOMIC64_CMPXCHG(&value_latency_free[i], 0, 1) == 0) {
+			*idx = i;
 			return &value_latency_global[i];
-		*/
-		/*
-		 * Workaround in the absence of ATOMIC64_CMPXCHG
-		 * support by LLVM. Reinstate the commented code above
-		 * once compare-and-exchange works.
-		 */
-		if (ATOMIC64_READ(&value_latency_free[i]) == 0) {
-			ATOMIC64_SET(&value_latency_free[i], seed);
-			if (ATOMIC64_READ(&value_latency_free[i]) == seed) {
-				ATOMIC64_SET(&value_latency_free[i], 1);
-				*idx = i;
-				return &value_latency_global[i];
-			}
 		}
 	}
 
 	return NULL;
+#else
+	{
+		unsigned int j;
+		static volatile unsigned int next_value_idx;
+	
+		/*
+		 * Workaround in the absence of ATOMIC64_CMPXCHG
+		 * support by LLVM. Remove this code block entirely
+		 * once compare-and-exchange works.
+		 */
+		i = ATOMIC_READ(&next_value_idx);
+		ATOMIC_INC(&next_value_idx);
+		j = i % VALUE_LATENCY_IDX;
+		*idx = j;
+
+		return &value_latency_global[j];
+	}
+#endif
+
 }
 
 static inline void put_value_latency(int idx)
@@ -385,11 +399,9 @@ static inline void put_value_latency(int idx)
 
 static inline void save_latency(u32 lat, u64 key, bool op, int idx)
 {
-	int i;
-	u64 seed;
+	unsigned int i;
 	struct value_latency *valuep;
 
-	seed = (u64)&valuep;
 	valuep = bpf_map_lookup_elem(&latency_map, &key);
 	if (valuep) {
 		/*
@@ -408,7 +420,7 @@ static inline void save_latency(u32 lat, u64 key, bool op, int idx)
 		ATOMIC_INC(&valuep->idx);
 
 	} else {
-		valuep = get_value_latency(seed, &i);
+		valuep = get_value_latency(&i);
 		if (!valuep) {
 			char msg[] = "Cannot find value for key %p";
 			bpf_trace_printk(msg, sizeof(msg), key);

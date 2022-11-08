@@ -1,8 +1,8 @@
 /*
+ * Copyright (C) 2022 Advanced Micro Devices, Inc.
+ *
  * Process samples from IBS or software sampler and analyze the instruction and
  * data (if available) samples.
- *
- * Copyright 2021 AMD, Inc.
  */
 
 #ifndef MEMBALANCER_UTILS_H

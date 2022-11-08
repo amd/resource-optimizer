@@ -1,5 +1,5 @@
-KDIR ?= /home/skurichi/fedora
-LIBBPF = /home/skurichi/libbpf
+KDIR ?= <..>/linux-5.19
+LIBBPF = <..>/libbpf
 CLANG ?= clang
 LLC ?= llc
 ARCH := $(subst x86_64,x86,$(shell arch))
@@ -27,6 +27,7 @@ CLANG_FLAGS = -I. \
 	-I$(KDIR)/arch/$(ARCH)/include/uapi \
 	-I$(KDIR)/arch/$(ARCH)/include/generated/uapi \
 	-I$(KDIR)/tools/testing/selftests/bpf/ \
+	-I${LIBBPF}/src \
 	-D__KERNEL__ -D__BPF_TRACING__ -Wno-unused-value -Wno-pointer-sign \
 	-DCC_USING_FENTRY \
 	-D__TARGET_ARCH_$(ARCH) -Wno-compare-distinct-pointer-types \

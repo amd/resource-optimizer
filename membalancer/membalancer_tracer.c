@@ -1,7 +1,7 @@
 /*
- * Automatic NUMA memory balancer Based on IBS sampler
+ * Copyright (C) 2022 Advanced Micro Devices, Inc.
  *
- * Copyright 2021 AMD, Inc.
+ * Automatic NUMA memory balancer Based on IBS sampler
  */
 #include <stdio.h>
 #include <stdlib.h>

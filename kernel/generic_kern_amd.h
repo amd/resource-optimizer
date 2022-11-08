@@ -1,12 +1,25 @@
 /*
+ * Copyright (C) 2022 Advanced Micro Devices, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
  * Process samples from IBS or software sampler and analyze the instruction and
  * data (if available) samples.
- *
- * Copyright 2022 AMD, Inc.
  */
 
-#ifndef _CMW_HDR_H
-#define _CMW_HDR_H
+#ifndef _GENERIC_KERN_AMD
+#define _GENERIC_KERN_AMD
 
 #define MAX_IBS_SAMPLES	(64 * 1024)
 /*
@@ -148,6 +161,8 @@ struct sched_exit {
 #define ATOMIC_ADD(v, val) __atomic_add_fetch((v), val, __ATOMIC_SEQ_CST)
 #define ATOMIC_SET(v, val) atomic_set((atomic_t *)(v), val)
 #define ATOMIC64_SET(v, val) atomic64_set((atomic64_t *)(v), val)
+#define ATOMIC_CMPXCHG(v, cur, new) __sync_val_compare_and_swap((v), cur, new)
+#define ATOMIC64_CMPXCHG(v, cur, new) __sync_val_compare_and_swap((v), cur, new)
 
 #if (__clang_major__ < 14)
 #define ATOMIC_INC_RETURN(v) atomic_inc_return_dummy(v)
@@ -159,7 +174,6 @@ static inline u32 atomic_inc_return_dummy(volatile u32 *v)
 	__atomic_add_fetch((v), 1, __ATOMIC_SEQ_CST);
 	return old;
 }
-#define ATOMIC_CMPXCHG(v, cur, new) __sync_val_compare_and_swap((v), cur, new)
 
 #define JUST_ONCE(v, cur, new) just_once(v)
 static inline bool just_once(volatile unsigned long *v)
