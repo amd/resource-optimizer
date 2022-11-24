@@ -31,7 +31,10 @@
 #ifndef MEMBALANCER_UTILS_H
 #define MEMBALANCER_UTILS_H
 
-#define MAX_NUMA 64
+#include<stdbool.h>
+#include<sys/types.h>
+
+#include "membalancer.h"
 
 struct ibs_fetch_sample {
         unsigned long ip;
@@ -51,13 +54,13 @@ struct ibs_op_sample {
         unsigned long op_regs[IBSOP_REG_COUNT];
 };
 
-extern struct ibs_fetch_sample fetch_samples[MAX_NUMA][MAX_IBS_SAMPLES];
-extern unsigned long fetch_samples_max[MAX_NUMA];
-extern unsigned long fetch_samples_cnt[MAX_NUMA];
+extern struct ibs_fetch_sample fetch_samples[MAX_NUMA_NODES][MAX_IBS_SAMPLES];
+extern unsigned long fetch_samples_max[MAX_NUMA_NODES];
+extern unsigned long fetch_samples_cnt[MAX_NUMA_NODES];
 
-extern struct ibs_op_sample op_samples[MAX_NUMA][MAX_IBS_SAMPLES];
-extern unsigned long op_samples_max[MAX_NUMA];
-extern unsigned long op_samples_cnt[MAX_NUMA];
+extern struct ibs_op_sample op_samples[MAX_NUMA_NODES][MAX_IBS_SAMPLES];
+extern unsigned long op_samples_max[MAX_NUMA_NODES];
+extern unsigned long op_samples_cnt[MAX_NUMA_NODES];
 extern bool tracer_physical_mode;
 
 struct bst_node;
@@ -80,6 +83,8 @@ void report_tracer_statistics(void);
 void set_base_page_size(unsigned long base_pagesz);
 
 unsigned long get_physaddr(pid_t pid, unsigned long vaddr);
+
+bool cpuvendor_supported();
 
 #define BRIGHT   "\x1b[1m"
 #define MAGENTA  "\x1B[35m"

@@ -127,9 +127,9 @@ static char * additional_programs_name[ADDITIONAL_PROGRAMS] = {
 #define IBS_FETCH_DEV "/sys/devices/ibs_fetch/type"
 #define IBS_OP_DEV    "/sys/devices/ibs_op/type"
 
-struct ibs_fetch_sample fetch_samples[MAX_NUMA][MAX_IBS_SAMPLES];
-unsigned long fetch_samples_max[MAX_NUMA];
-unsigned long fetch_samples_cnt[MAX_NUMA];
+struct ibs_fetch_sample fetch_samples[MAX_NUMA_NODES][MAX_IBS_SAMPLES];
+unsigned long fetch_samples_max[MAX_NUMA_NODES];
+unsigned long fetch_samples_cnt[MAX_NUMA_NODES];
 
 
 #define PAGES_PER_CALL 32
@@ -172,9 +172,9 @@ static atomic64_t ibs_workers;
 static atomic64_t ibs_pending_fetch_samples;
 static atomic64_t ibs_pending_op_samples;
 
- struct ibs_op_sample op_samples[MAX_NUMA][MAX_IBS_SAMPLES];
-unsigned long op_samples_max[MAX_NUMA];
-unsigned long op_samples_cnt[MAX_NUMA];
+ struct ibs_op_sample op_samples[MAX_NUMA_NODES][MAX_IBS_SAMPLES];
+unsigned long op_samples_max[MAX_NUMA_NODES];
+unsigned long op_samples_cnt[MAX_NUMA_NODES];
 
 static void * page_move_function(void *arg);
 static unsigned long upgrade_align   = 256 * PAGE_SIZE; 
@@ -2234,10 +2234,14 @@ int main(int argc, char **argv)
 
 	nr_cpus = sysconf(_SC_NPROCESSORS_ONLN);
 
-        if (setrlimit(RLIMIT_MEMLOCK, &r)) {
-                perror("setrlimit(RLIMIT_MEMLOCK)");
-                return 1;
-        }
+	if (!cpuvendor_supported()) {
+		printf("CPU vendor not supported\n");
+		return -1;
+	}
+	if (setrlimit(RLIMIT_MEMLOCK, &r)) {
+		perror("setrlimit(RLIMIT_MEMLOCK)");
+		return -1;
+	}
 
 	while ((opt = getopt(argc, argv, cmd_args)) != -1) {
 		switch (opt) {
@@ -2352,7 +2356,7 @@ int main(int argc, char **argv)
 
 	if (freq == 0 || msecs == 0) {
 		usage(argv[0]);
-		return 1;
+		return -1;
 	}
 
 	ibs_fetchop_config_set();

@@ -46,16 +46,16 @@ typedef unsigned long__u64, u64;
 #include "membalancer_utils.h"
 #include "membalancer_numa.h"
 
-extern struct numa_node_mem numa_table[MAX_NUMA];
-struct mem_tier mem_tier[MAX_NUMA];
+extern struct numa_node_mem numa_table[MAX_NUMA_NODES];
+struct mem_tier mem_tier[MAX_NUMA_NODES];
 int mem_tiers;
 bool tier_mode = false;
 
 #define PAGE_SIZE  4096 /*getpagesize()*/
 #define PAGE_SHIFT 12
 
-static unsigned long fetch_overall_samples[MAX_NUMA];
-static unsigned long op_overall_samples[MAX_NUMA];
+static unsigned long fetch_overall_samples[MAX_NUMA_NODES];
+static unsigned long op_overall_samples[MAX_NUMA_NODES];
 
 int numa_tier_get(unsigned long physaddr)
 {

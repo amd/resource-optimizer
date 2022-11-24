@@ -41,22 +41,22 @@
 #include <stdbool.h>
 
 typedef unsigned int __u32, u32;
-typedef unsigned long__u64, u64;
+typedef unsigned long __u64, u64;
 #include "membalancer.h"
 
 #include "membalancer_utils.h"
 #include "membalancer_numa.h"
 
 int max_nodes;
-struct numa_node_mem numa_table[MAX_NUMA];
+struct numa_node_mem numa_table[MAX_NUMA_NODES];
 
 
 #define PAGE_SIZE  4096 /*getpagesize()*/
 #define PAGE_SHIFT 12
 #define MIN_PCT 1.75
 
-static unsigned long fetch_overall_samples[MAX_NUMA];
-static unsigned long op_overall_samples[MAX_NUMA];
+static unsigned long fetch_overall_samples[MAX_NUMA_NODES];
+static unsigned long op_overall_samples[MAX_NUMA_NODES];
 
 #define NUMA_NODE_INFO "/sys/devices/system/node"
 

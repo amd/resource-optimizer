@@ -10,6 +10,7 @@ BIN_LOAD := bpf_load.o
 BIN_NUMA := ${MODULE}_numa.o
 BIN_TIER := ${MODULE}_tier.o
 BIN_TRACER := ${MODULE}_tracer.o
+BIN_UTILS := ${MODULE}_utils.o
 GETPADDR:= getpaddr.o
 LIBS  := ${LIBBPF}/src/libbpf.so -lz -lelf -lnuma -lpthread
 #DEFS = -DUSE_PAGEMAP
@@ -44,7 +45,7 @@ CLANG_FLAGS = -I. \
 	-g -O2 -emit-llvm
 
 all:   $(BIN_KERN) \
-       ${BIN_TRACER} ${BIN_NUMA} ${BIN_TIER} \
+       ${BIN_TRACER} ${BIN_NUMA} ${BIN_UTILS} ${BIN_TIER} \
        ${HEAP} ${GETPADDR} ${BIN_USER}
 
 %_kern.o: %_kern.c
@@ -61,12 +62,15 @@ getpaddr.o: getpaddr.c
 	$(CLANG) -c $<  ${USR_INCLUDE}
 %_tracer.o: %_tracer.c
 	$(CLANG) -c $<  ${USR_INCLUDE}
+%_utils.o: %_utils.c
+	$(CLANG) -c $<  ${USR_INCLUDE}
 
 %_user.o: %_user.c
 	$(CLANG) \
 	./membalancer_numa.o \
 	./membalancer_tier.o \
         ./membalancer_tracer.o \
+        ./membalancer_utils.o \
         ./getpaddr.o \
 	$<  ${USR_INCLUDE} -o ${MODULE} \
 	${LIBS} ${DEFS} -Wall 

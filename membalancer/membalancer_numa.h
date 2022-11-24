@@ -40,7 +40,7 @@ struct numa_node_mem {
         int           downgrade_pct;
 	int           tierno;
 	int           unused;
-	int           distance[MAX_NUMA];
+	int           distance[MAX_NUMA_NODES];
 };
 
 struct mem_tier {
@@ -54,7 +54,7 @@ struct mem_tier {
         int downgrade_pct;
         int downgrade_cap;
 	int unused;
-	struct numa_node_mem *nodep[MAX_NUMA];
+	struct numa_node_mem *nodep[MAX_NUMA_NODES];
 };
 
 int get_current_node(unsigned long physaddr);
