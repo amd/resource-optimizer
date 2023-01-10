@@ -149,11 +149,13 @@ static void init_function(void)
 				check_ppid = 1;
 			else
 				check_ppid = 0;
+			continue;
 		}
 
 		if (i == MY_PAGE_SIZE)  {
 			if ((valuep != NULL) && (*valuep != 0))
 				my_page_size = *valuep;
+			continue;
 		}
 
 		if (i == PER_NUMA_ACCESS_STATS) {
@@ -161,6 +163,7 @@ static void init_function(void)
 				per_numa_access_stats = true;
 			else
 				per_numa_access_stats = false;
+			continue;
 
 		}
 
@@ -169,6 +172,7 @@ static void init_function(void)
 				latency_stats = true;
 			else
 				latency_stats = false;
+			continue;
 		}
 
 		if (i == LATENCY_STATS_L3MISS) {
@@ -176,16 +180,19 @@ static void init_function(void)
 				latency_stats_l3miss = true;
 			else
 				latency_stats_l3miss = false;
+			continue;
 		}
 
 		if (i == KERN_VERBOSE) {
 			if (valuep != NULL && (*valuep > 0))
 				kern_verbose = *valuep;
+			continue;
 		}
 
 		if (i == MY_OWN_PID) {
 			if (valuep != NULL && (*valuep > 0))
 				my_own_pid = *valuep;
+			continue;
 		}
 
 		if (i == USER_SPACE_ONLY)
