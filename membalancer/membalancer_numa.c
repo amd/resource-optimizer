@@ -438,3 +438,17 @@ void process_ibs_op_samples_numa(struct bst_node **rootpp,
                 }
         }
 }
+
+int numa_range_get(int idx, struct numa_range *range)
+{
+	if (idx >= max_nodes)
+		return -1;
+
+	range->first_pfn = numa_table[idx].first_pfn;
+	range->last_pfn  = numa_table[idx].last_pfn;
+	range->node      = numa_table[idx].node;
+	range->tier      = numa_table[idx].tierno;
+
+	return 0;
+}
+

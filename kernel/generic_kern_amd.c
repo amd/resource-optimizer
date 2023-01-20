@@ -65,26 +65,10 @@ struct {
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, u64);
-	__type(value, struct value_data);
-	__uint(max_entries, MAX_STORED_PAGES);
-} op_page SEC(".maps");
-
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, int);
 	__type(value, int);
 	__uint(max_entries, TOTAL_KNOBS);
 } knobs SEC(".maps");
-
-/*
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, u64);
-	__type(value, struct value_cmd);
-	__uint(max_entries, 16384);
-} cmd_map SEC(".maps");
-*/
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -132,6 +116,22 @@ static bool user_space_only = false;
 static unsigned long my_page_size;
 
 static volatile u64 ibs_fetches, ibs_ops;
+static bool processtats;
+
+static void save_fetch_latency(u64 reg, u64 addr, int idx);
+static void save_op_latency(u64 reg, u64 addr, int idx);
+static void save_node_usage(pid_t pid,
+                     volatile u32 counts[MAX_NUMA_NODES]);
+static int process_fetch_samples(u64 tgid,
+				 struct value_fetch *fetch_data,
+                                 u64 ip, u32 page_size);
+static int process_op_samples(u64 tgid,
+			      struct value_op *op_data,
+			      u64 ip, u32 page_size);
+
+static void load_numa_ranges(void);
+static void update_process_statistics(u64 tgid, u64 address,
+				      bool fetch);
 
 static void init_function(void)
 {
@@ -195,6 +195,13 @@ static void init_function(void)
 			continue;
 		}
 
+		if (i == PROCESS_STATS) {
+			if (valuep != NULL && (*valuep > 0)) {
+				processtats = true;
+				load_numa_ranges();
+			}
+		}
+
 		if (i == USER_SPACE_ONLY)
 			user_space_only = true;
 
@@ -225,6 +232,17 @@ static inline void inc_ibs_op_samples(void)
 	ATOMIC_INC(&ibs_ops);
 	value = ATOMIC64_READ(&ibs_ops);
         bpf_map_update_elem(&op_counter, &key, &value, BPF_ANY);
+}
+
+static inline int cpu_node_get(pid_t pid)
+{
+	int *nodep;
+
+	nodep = bpf_map_lookup_elem(&pid_node_map, &pid);
+	if (!nodep)
+		return -1;
+
+	return *nodep;
 }
 
 static bool valid_pid_with_task(pid_t pid, struct task_struct *mytask)
@@ -293,196 +311,18 @@ static bool valid_pid(pid_t pid)
 	return valid_pid_with_task(pid, NULL);
 }
 
-static void inc_counters(int node,
-			  volatile u32 counts[MAX_NUMA_NODES])
-{
-	int i;
-
-	for (i = 0; i < MAX_NUMA_NODES; i++) {
-
-		if (i == node) { 
-			ATOMIC_INC(&counts[i]);
-			/*break*/
-		}
-
-		/*
-		 * BPF runtime check puzzle.
-		 * Unable to place break into the previous if statement.
-		 * Or else attempts to run the program fails with error
-		 * "variable stack access var_off"
-		 */
-		if (i >= node) {
-			break;
-		}
-	}
-}
-
-static void save_node_usage(pid_t pid,
-			    volatile u32 counts[MAX_NUMA_NODES])
-{
-	int *nodep;
-
-	if (!per_numa_access_stats)
-		return;
-
-        nodep = bpf_map_lookup_elem(&pid_node_map, &pid);
-	if (!nodep) {
-		if (kern_verbose >= 5) {
-			/*
-			char msg[] = "NODE not found pid %d node %p";
-			bpf_trace_printk(msg, sizeof(msg), pid, nodep);
-			*/
-		}
-		return;
-	}
-
-	if (kern_verbose >= 5) {
-		char msg[] = "NODE FOUND pid %d node %d";
-		bpf_trace_printk(msg, sizeof(msg), pid, *nodep);
-	}
-
-
-	/*
-	if (*nodep >=  MAX_NUMA_NODES)
-		return;
-	ATOMIC_INC(&counts[*nodep]);
-	*/
-
-	inc_counters(*nodep, counts);
-}
-
-#define VALUE_LATENCY_IDX 1024
-static struct value_latency value_latency_global[VALUE_LATENCY_IDX];
-static u64 value_latency_free[VALUE_LATENCY_IDX];
-static inline struct value_latency * get_value_latency(unsigned int *idx)
-{
-	unsigned int i;
-
-#if (__clang_major__ >= 14)
-	for (i = 0; i < VALUE_LATENCY_IDX; i++) {
-		if (ATOMIC64_CMPXCHG(&value_latency_free[i], 0, 1) == 0) {
-			*idx = i;
-			return &value_latency_global[i];
-		}
-	}
-
-	return NULL;
-#else
-	{
-		unsigned int j;
-		static volatile unsigned int next_value_idx;
-	
-		/*
-		 * Workaround in the absence of ATOMIC64_CMPXCHG
-		 * support by LLVM. Remove this code block entirely
-		 * once compare-and-exchange works.
-		 */
-		i = ATOMIC_READ(&next_value_idx);
-		ATOMIC_INC(&next_value_idx);
-		j = i % VALUE_LATENCY_IDX;
-		*idx = j;
-
-		return &value_latency_global[j];
-	}
-#endif
-
-}
-
-static inline void put_value_latency(int idx)
-{
-	int i;
-
-	for (i = 0; i < VALUE_LATENCY_IDX; i++) {
-		if (i == idx) {
-			/*
-			for (j = 0; j < MAX_LATENCY_IDX; j++)
-				value_latency_global[i].latency[j] = 0;
-			*/
-			ATOMIC64_SET(&value_latency_free[i], 0);
-			break;
-		}
-	}
-}
-
-static inline void save_latency(u32 lat, u64 key, bool op, int idx)
-{
-	unsigned int i;
-	struct value_latency *valuep;
-
-	valuep = bpf_map_lookup_elem(&latency_map, &key);
-	if (valuep) {
-		/*
-		if (idx < MAX_LATENCY_IDX)
-			valuep->latency[idx] = lat;
-		*/
-		idx = ATOMIC_READ(&valuep->idx);
-		if (idx >= MAX_LATENCY_IDX)
-			return;
-		for (i = 0; i < MAX_LATENCY_IDX; i++) {
-			if (i == idx) {
-				ATOMIC_SET(&valuep->latency[i], lat);
-				break;
-			}
-		}
-		ATOMIC_INC(&valuep->idx);
-
-	} else {
-		valuep = get_value_latency(&i);
-		if (!valuep) {
-			char msg[] = "Cannot find value for key %p";
-			bpf_trace_printk(msg, sizeof(msg), key);
-			return;
-		}
-
-		ATOMIC_SET(&valuep->idx, 0);
-		bpf_map_update_elem(&latency_map, &key, valuep, BPF_NOEXIST);
-		put_value_latency(i);
-	}
-}
-
-static void save_fetch_latency(u64 reg, u64 addr, int idx)
-{
-	u32 latency;
-
-	if (!latency_stats && !latency_stats_l3miss)
-		return;
-
-	if (latency_stats_l3miss && !IBS_FETCH_LLC_MISS(reg))
-		return;
-
-	latency = reg >> 32;
-	latency &= (latency << 16) >> 16;
-	save_latency(latency, addr, false, idx);
-}
-
-static void save_op_latency(u64 reg, u64 addr, int idx)
-{
-	u32 latency;
-
-	if (!latency_stats && !latency_stats_l3miss)
-		return;
-
-	if (latency_stats_l3miss && !IBS_OP_LLC_MISS(reg))
-		return;
-
-	latency = reg >> 32;
-	latency &= (latency << 16) >> 16;
-
-	save_latency(latency, addr, true, idx);
-}
-
 SEC("perf_event")
 int ibs_fetch_event(struct bpf_perf_event_data *ctx)
 {
-	struct value_fetch init_val, *value;
-	u64 ip, key;
+	struct value_fetch init_val;
+	u64 ip;
 	struct bpf_perf_event_data_kern *kern_ctx;
 	struct perf_sample_data *data = NULL;
 	struct perf_raw_record *raw = NULL;
 	struct perf_ibs_fetch_data *ibs_data;
 	struct perf_raw_frag frag;
 	void *addr;
-	u64 tgid;
+	u64 tgid, key;
 
 	init_function();
 
@@ -514,48 +354,17 @@ int ibs_fetch_event(struct bpf_perf_event_data *ctx)
 	if (user_space_only && IBS_KERN_SAMPLE(ip))
 		return 0;
 
+	if (processtats == false)
+		return process_fetch_samples(tgid, &init_val,
+					      ip, my_page_size);
+
 #ifdef MEMB_USE_VA
 	key = init_val.fetch_regs[IBS_FETCH_LINADDR];
 #else
 	key = init_val.fetch_regs[IBS_FETCH_PHYSADDR];
 #endif
-	if (my_page_size > 0)
-		key &= ~(my_page_size - 1);
 
-	value = bpf_map_lookup_elem(&ibs_fetch_map, &key);
-	if (value) {
-
-		save_fetch_latency(init_val.fetch_regs[IBS_FETCH_CTL], key,
-				   ATOMIC_READ(&value->count));
-		ATOMIC_INC(&value->count);
-
-		save_node_usage(tgid >> 32,  value->counts);
-
-		inc_ibs_fetch_samples();
-	} else {
-		int i;
-
-		save_fetch_latency(init_val.fetch_regs[IBS_FETCH_CTL], key, 0);
-
-		ATOMIC_SET(&init_val.count, 1);
-		init_val.tgid = tgid;
-		init_val.filler = 0;
-
-		for (i = 0; i < MAX_NUMA_NODES; i++)
-			init_val.counts[i] = 0;
-
-		save_node_usage(tgid >> 32, init_val.counts);
-
-		/* If its is akernel sample or user sample with process id
-		 * then record it.
-		 */
-		if ((IBS_KERN_SAMPLE(ip) || init_val.tgid)) {
-			bpf_map_update_elem(&ibs_fetch_map, &key, &init_val,
-					    BPF_NOEXIST);
-			inc_ibs_fetch_samples();
-		}
-	}
-
+	update_process_statistics(tgid, key, true);
 	return 0;
 }
 
@@ -567,10 +376,10 @@ int ibs_op_event(struct bpf_perf_event_data *ctx)
 	struct perf_raw_record *raw = NULL;
 	struct perf_ibs_fetch_data *ibs_data;
 	struct perf_raw_frag frag;
-	u64 key, ip;
+	u64 ip;
 	void *addr;
-	struct value_op init_val, *value;
-	u64 tgid;
+	struct value_op init_val;
+	u64 tgid, key;
 
 	init_function();
 
@@ -595,74 +404,23 @@ int ibs_op_event(struct bpf_perf_event_data *ctx)
 	bpf_probe_read(&init_val.op_regs[0], sizeof(init_val.op_regs),
 			addr);
 
+
 	if (!IBS_OP_LINADDR_VALID(init_val.op_regs[IBS_OP_DATA3]))
 		return 0;
 
 	if (!IBS_OP_PHYSADDR_VALID(init_val.op_regs[IBS_OP_DATA3]))
 		return 0;
 
+	if (processtats == false)
+		return process_op_samples(tgid, &init_val, ip, my_page_size);
+
 #ifdef MEMB_USE_VA
 	key = init_val.op_regs[IBS_DC_LINADDR];
 #else
 	key = init_val.op_regs[IBS_DC_PHYSADDR];
 #endif
-	if (my_page_size > 0)
-		key &= ~(my_page_size - 1);
+	update_process_statistics(tgid, key, false);
 
-	value = bpf_map_lookup_elem(&ibs_op_map, &key);
-	if (value) {
-		/*
-		if ((value->op_regs[IBS_DC_PHYSADDR] &
-			(~(CCMD_PAGE_SIZE - 1))) !=
-		     (init_val.op_regs[IBS_DC_PHYSADDR] &
-			(~(CCMD_PAGE_SIZE - 1)))) {
-			return 0;
-		}
-		*/
-
-		save_op_latency(init_val.op_regs[IBS_OP_DATA3], key,
-				ATOMIC_READ(&value->count));
-		ATOMIC_INC(&value->count);
-		save_node_usage(tgid >> 32, value->counts);
-		/*
-		inc_ibs_op_samples();
-		*/
-	} else {
-		int i;
-
-		save_op_latency(init_val.op_regs[IBS_OP_DATA3], key, 0);
-
-		ATOMIC_SET(&init_val.count, 1);
-		init_val.tgid = tgid;
-		init_val.ip = ip;
-		init_val.filler = 0;
-
-
-		for (i = 0; i < MAX_NUMA_NODES; i++)
-			init_val.counts[i] = 0;
-
-		save_node_usage(tgid >> 32, init_val.counts);
-		/*
-		init_val.op_regs[IBS_OP_CTL] = regs[IBS_OP_CTL];
-		init_val.op_regs[IBS_OP_RIP] = regs[IBS_OP_RIP];
-		init_val.op_regs[IBS_OP_DATA] = regs[IBS_OP_DATA];
-		init_val.op_regs[IBS_OP_DATA2] = regs[IBS_OP_DATA2];
-		init_val.op_regs[IBS_OP_DATA3] = regs[IBS_OP_DATA3];
-		init_val.op_regs[IBS_DC_LINADDR] = regs[IBS_DC_LINADDR];
-		init_val.op_regs[IBS_DC_PHYSADDR] = regs[IBS_DC_PHYSADDR];
-		*/
-
-		/* If its is akernel sample or user sample with process id
-		 * then record it.
-		 */
-		if (init_val.op_regs[IBS_DC_PHYSADDR] != (u64)-1 &&
-			(IBS_KERN_SAMPLE(ip) || init_val.tgid)) {
-			bpf_map_update_elem(&ibs_op_map, &key, &init_val,
-					    BPF_NOEXIST);
-			inc_ibs_op_samples();
-		}
-	}
-	
 	return 0;
 }
 
@@ -755,5 +513,8 @@ int sched_process_exit(struct sched_exit *exit)
 
         return 0;
 }
+#include "memstats_kern.c"
+#include "processtats_kern.c"
+
 
 char _license[] SEC("license") = "GPL";

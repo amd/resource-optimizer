@@ -84,7 +84,11 @@ void set_base_page_size(unsigned long base_pagesz);
 
 unsigned long get_physaddr(pid_t pid, unsigned long vaddr);
 
-bool cpuvendor_supported();
+bool cpuvendor_supported(void);
+struct bpf_object;
+int fill_numa_address_range_map(struct bpf_object *obj);
+void process_migrate_processes(int map_fd);
+int numa_range_get(int idx, struct numa_range *range);
 
 #define BRIGHT   "\x1b[1m"
 #define MAGENTA  "\x1B[35m"

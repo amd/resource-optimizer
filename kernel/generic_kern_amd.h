@@ -22,9 +22,6 @@
 #define _GENERIC_KERN_AMD
 
 #define MAX_IBS_SAMPLES	(64 * 1024)
-/*
-#define MAX_STORED_PAGES (MAX_IBS_SAMPLES / 4)
-*/
 #define MAX_STORED_PAGES (128)
 #define PROCESSNAMELEN 32
 #define CMW_PAGE_OFFSET 0xffff880000000000
@@ -56,6 +53,7 @@ enum balancer_knobs {
 	LATENCY_STATS_L3MISS,
 	KERN_VERBOSE,
 	USER_SPACE_ONLY,
+	PROCESS_STATS,
 	LAST_KNOB,
 	TOTAL_KNOBS,
 };
@@ -149,7 +147,19 @@ struct sched_exit {
         int   prio;
 };
 
-#ifdef __KERNEL__ 
+struct process_stats {
+	volatile u32 memory[MAX_NUMA_NODES];
+	volatile u32 cpu[MAX_NUMA_NODES];
+};
+
+struct numa_range {
+	u64 first_pfn;
+	u64 last_pfn;
+	u32 node;
+	u32 tier;
+};
+
+#ifdef __KERNEL__
 /*
 #define ATOMIC_READ(v) __atomic_fetch_add((v), 0, __ATOMIC_SEQ_CST)
 #define ATOMIC_READ(v) __sync_fetch_and_add_N((v), 0)

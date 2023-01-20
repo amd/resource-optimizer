@@ -97,7 +97,7 @@ static unsigned int min_ibs_samples = MIN_IBS_CLASSIC_SAMPLES;
 static int migration_timeout_sec = 20;
 static int min_migrated_pages = MIN_MIGRATED_PAGES;
 
-static char cmd_args[]  = "c:f:P:p:r:m:M:v:U:T:t:D:L:B:uhcbHVl";
+static char cmd_args[]  = "c:f:P:p:r:m:M:v:U:T:t:D:L:B:uhcbHVlX";
 static int ibs_fetch_device = -1;
 static int ibs_op_device    = -1;
 #define FETCH_CONFIG        57
@@ -110,6 +110,7 @@ static int ibs_op_config;
 static unsigned int cpu_nodes;
 static pid_t mypid;
 static bool l3miss = false;
+static bool migrate_process = false;
 
 static atomic64_t fetch_cnt, op_cnt, pages_migrated;
 
@@ -1673,6 +1674,13 @@ static void process_samples(int *map_fd, int msecs, int fetch)
 		atomic64_sub(&ibs_pending_op_samples, op_cnt);
 	}
 
+	if (migrate_process) {
+		if ((fetch_cnt >= MIN_IBS_FETCH_SAMPLES) ||
+			(op_cnt >= MIN_IBS_OP_SAMPLES))
+			process_migrate_processes(map_fd[3]);
+		return;
+	}
+
 	total_freq_fetch = 0;
 	total_freq_op = 0;
 
@@ -1993,11 +2001,11 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 		goto cleanup;
 	}
 
-	map_fd[3] = bpf_object__find_map_fd_by_name(obj, "op_page");
-	if (map_fd[3] < 0) {
-		fprintf(stderr, "BPF cannot find op_map\n");
-		goto cleanup;
-	}
+        map_fd[3] = bpf_object__find_map_fd_by_name(obj, "process_stats_map");
+        if (map_fd[3] < 0) {
+                fprintf(stderr, "BPF cannot find map fetch_counter\n");
+                goto cleanup;
+        }
 
         map_fd[4] = bpf_object__find_map_fd_by_name(obj, "fetch_counter");
         if (map_fd[4] < 0) {
@@ -2034,6 +2042,14 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 	set_knob(map_fd[6], MY_PAGE_SIZE, CCMD_PAGE_SIZE);
 	set_knob(map_fd[6], MY_OWN_PID, getpid());
 	set_knob(map_fd[6], KERN_VERBOSE, verbose);
+	if (migrate_process) {
+		if (fill_numa_address_range_map(obj) <= 0) {
+			err = -EINVAL;
+			goto cleanup;
+		}
+		set_knob(map_fd[6], PROCESS_STATS, 1);
+	}
+
 	set_knob(map_fd[6], LAST_KNOB, 1);
 
 	err = parse_additional_bpf_programs(obj);
@@ -2339,6 +2355,9 @@ int main(int argc, char **argv)
 			break;
 		case 'L':
 			trace_dir = optarg;
+			break;
+		case 'X':
+			migrate_process = true;
 			break;
 		default:
 			usage(argv[0]);

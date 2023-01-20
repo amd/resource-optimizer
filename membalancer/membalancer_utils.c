@@ -57,7 +57,7 @@ static const cpu_vendor_t cpu_vendor_id[MAX_VENDOR_ID] = { {"AuthenticAMD"},
 /* Function detects cpu vendor of host machine
  * and matches against supported cpu vendors
  */
-bool cpuvendor_supported()
+bool cpuvendor_supported(void)
 {
 	uint32_t a = 0, id[REG_COUNT];
 	int i;
