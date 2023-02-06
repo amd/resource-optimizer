@@ -33,7 +33,7 @@ struct {
 	__uint(max_entries, 16384);
 } process_stats_map SEC(".maps");
 
-#define MAX_PROCESS_STATS_IDX 1024
+#define MAX_PROCESS_STATS_IDX 256
 static struct process_stats process_stats_global[MAX_PROCESS_STATS_IDX];
 static u64 process_stats_free[MAX_PROCESS_STATS_IDX];
 

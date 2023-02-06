@@ -27,27 +27,39 @@
 #include <linux/perf_event.h>
 #include <bpf/bpf_helpers.h>
 #include <generic_kern_amd.h>
+#include <assert.h>
+
+#define INC_COUNTER(counts, node, i) \
+	if (node == i)  {    \
+		ATOMIC_INC(&counts[i]); \
+		return;      \
+	}
+
+#define INC_COUNTERS(counts, node, base) \
+	INC_COUNTER(counts, node, 0 + (base));\
+	INC_COUNTER(counts, node, 1 + (base));\
+	INC_COUNTER(counts, node, 2 + (base));\
+	INC_COUNTER(counts, node, 3 + (base));\
+	INC_COUNTER(counts, node, 4 + (base));\
+	INC_COUNTER(counts, node, 5 + (base));\
+	INC_COUNTER(counts, node, 6 + (base));\
+	INC_COUNTER(counts, node, 7 + (base));
 
 void inc_resource_usage(int node,
 			volatile u32 counts[MAX_NUMA_NODES])
 {
-	int i;
 
-	for (i = 0; i < MAX_NUMA_NODES; i++) {
-		if (i == node) { 
-			ATOMIC_INC(&counts[i]);
-			/*break*/
-		}
+	_Static_assert(MAX_NUMA_NODES == 16, "MAX_NUMA_NODES != 16");
 
-		/*
-		 * BPF runtime check puzzle.
-		 * Unable to place break into the previous if statement.
-		 * Or else attempts to run the program fails with error
-		 * "variable stack access var_off"
-		 */
-		if (i >= node)
-			break;
+	if (node < 0 || node >= MAX_NUMA_NODES)
+		return; 
+
+	if (node < MAX_NUMA_NODES / 2) {
+		INC_COUNTERS(counts, node, 0); 
+	} else {
+		INC_COUNTERS(counts, node, MAX_NUMA_NODES / 2);
 	}
+
 }
 
 static void  save_node_usage(pid_t pid,
@@ -73,7 +85,7 @@ static void  save_node_usage(pid_t pid,
 	return;
 }
 
-#define VALUE_LATENCY_IDX 1024
+#define VALUE_LATENCY_IDX 256
 static struct value_latency value_latency_global[VALUE_LATENCY_IDX];
 static u64 value_latency_free[VALUE_LATENCY_IDX];
 static inline struct value_latency * get_value_latency(unsigned int *idx)

@@ -114,6 +114,3 @@ void process_migrate_processes(int map_fd)
 		printf("\n");
 	}
 }
-
-
-
