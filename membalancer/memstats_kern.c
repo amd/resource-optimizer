@@ -28,6 +28,29 @@
 #include <bpf/bpf_helpers.h>
 #include <generic_kern_amd.h>
 #include <assert.h>
+#include "membalancer.h"
+#include "membalancer_pvt.h"
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, u64);
+	__type(value, struct value_fetch);
+	__uint(max_entries, MAX_IBS_SAMPLES);
+} ibs_fetch_map SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, u64);
+	__type(value, struct value_op);
+	__uint(max_entries, MAX_IBS_SAMPLES);
+} ibs_op_map SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, u64);
+	__type(value, struct value_latency);
+	__uint(max_entries, MAX_IBS_SAMPLES);
+} latency_map SEC(".maps");
 
 #define INC_COUNTER(counts, node, i) \
 	if (node == i)  {    \
@@ -51,41 +74,36 @@ void inc_resource_usage(int node,
 
 	_Static_assert(MAX_NUMA_NODES == 16, "MAX_NUMA_NODES != 16");
 
-	if (node < 0 || node >= MAX_NUMA_NODES)
+	if (!VALID_NODE(node))
 		return; 
 
 	if (node < MAX_NUMA_NODES / 2) {
-		INC_COUNTERS(counts, node, 0); 
+		INC_COUNTERS(counts, node, 0);
 	} else {
 		INC_COUNTERS(counts, node, MAX_NUMA_NODES / 2);
 	}
-
 }
 
-static void  save_node_usage(pid_t pid,
-			     volatile u32 counts[MAX_NUMA_NODES])
+static void save_node_usage(pid_t pid,
+		            volatile u32 counts[MAX_NUMA_NODES])
 {
-	int *nodep;
+	int node;
 
 	if (!per_numa_access_stats)
 		return;
 
-	nodep = bpf_map_lookup_elem(&pid_node_map, &pid);
-	if (!nodep)
+	node = cpu_node_get(pid);
+	if (!VALID_NODE(node))
 		return;
-
 	/*
-	if (*nodep >=  MAX_NUMA_NODES)
-		return;
 	ATOMIC_INC(&counts[*nodep]);
 	*/
-
-	inc_resource_usage(*nodep, counts);
+	inc_resource_usage(node, counts);
 
 	return;
 }
 
-#define VALUE_LATENCY_IDX 256
+#define VALUE_LATENCY_IDX 64
 static struct value_latency value_latency_global[VALUE_LATENCY_IDX];
 static u64 value_latency_free[VALUE_LATENCY_IDX];
 static inline struct value_latency * get_value_latency(unsigned int *idx)
@@ -250,10 +268,9 @@ static int process_fetch_samples(u64 tgid, struct value_fetch *fetch_data,
 }
 
 static int process_op_samples(u64 tgid, struct value_op *op_data,
-			      u64 ip, u32 page_size)
+			      u64 ip, u64 page_size)
 {
 	u64 key;
-	
 	struct value_fetch *valuep;
 	int i;
 
@@ -298,4 +315,43 @@ static int process_op_samples(u64 tgid, struct value_op *op_data,
 	}
 
 	return 0;
+}
+
+SEC("perf_event")
+int memstats_data_sampler(struct bpf_perf_event_data *ctx)
+{
+	struct value_op op_data;
+	int err;
+	u64 ip, tgid;
+
+        err = ibs_op_event(ctx, &op_data, &tgid, &ip);
+        if (err)
+		return err;
+
+	/*
+	if (user_space_only && IBS_KERN_SAMPLE(ip))
+		return 0;
+
+	if (!IBS_OP_LINADDR_VALID(op_data.op_regs[IBS_OP_DATA3]))
+		return 0;
+
+	if (!IBS_OP_PHYSADDR_VALID(op_data.op_regs[IBS_OP_DATA3]))
+		return 0;
+	*/
+
+	return process_op_samples(tgid, &op_data, ip, my_page_size);
+}
+
+SEC("perf_event")
+int memstats_code_sampler(struct bpf_perf_event_data *ctx)
+{
+	struct value_fetch fetch_data;
+	int err;
+	u64 ip, tgid;
+
+        err = ibs_fetch_event(ctx, &fetch_data, &tgid, &ip);
+        if (err)
+		return err;
+
+	return process_fetch_samples(tgid, &fetch_data, ip, my_page_size);
 }

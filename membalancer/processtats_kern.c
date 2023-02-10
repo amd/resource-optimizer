@@ -17,6 +17,19 @@
  * Help functions for collecting per-process samples
  */
 #pragma once
+#include <linux/version.h>
+#include <bpf/bpf_tracing.h>
+#include <linux/ptrace.h>
+#include <uapi/linux/bpf.h>
+#include <uapi/linux/bpf_perf_event.h>
+#include <bpf/bpf_helpers.h>
+#include <linux/perf_event.h>
+#include <bpf/bpf_helpers.h>
+#include <generic_kern_amd.h>
+#include <assert.h>
+#include "membalancer.h"
+#include "membalancer_pvt.h"
+
 static struct numa_range numa_ranges[MAX_NUMA_NODES];
 static int max_num_ranges;
 struct {
@@ -33,7 +46,7 @@ struct {
 	__uint(max_entries, 16384);
 } process_stats_map SEC(".maps");
 
-#define MAX_PROCESS_STATS_IDX 256
+#define MAX_PROCESS_STATS_IDX 64
 static struct process_stats process_stats_global[MAX_PROCESS_STATS_IDX];
 static u64 process_stats_free[MAX_PROCESS_STATS_IDX];
 
@@ -163,4 +176,48 @@ static void update_process_statistics(u64 tgid, u64 address, bool fetch)
 		inc_ibs_fetch_samples();
 	else
 		inc_ibs_op_samples();
+}
+
+SEC("perf_event")
+int processstats_data_sampler(struct bpf_perf_event_data *ctx)
+{
+	struct value_op op_data;
+	int err;
+	u64 ip, tgid, key;
+
+	err = ibs_op_event(ctx, &op_data, &tgid, &ip);
+	if (err)
+		return err;
+
+#ifdef MEMB_USE_VA
+	key = op_data.op_regs[IBS_DC_LINADDR];
+#else
+	key = op_data.op_regs[IBS_DC_PHYSADDR];
+#endif
+
+	update_process_statistics(tgid, key, false);
+
+	return 0;
+
+}
+
+SEC("perf_event")
+int processstats_code_sampler(struct bpf_perf_event_data *ctx)
+{
+	struct value_fetch fetch_data;
+	int err;
+	u64 ip, tgid, key;
+
+	err = ibs_fetch_event(ctx, &fetch_data, &tgid, &ip);
+	if (err)
+		return err;
+
+#ifdef MEMB_USE_VA
+	key = fetch_data.fetch_regs[IBS_FETCH_LINADDR];
+#else
+	key = fetch_data.fetch_regs[IBS_FETCH_PHYSADDR];
+#endif
+
+	update_process_statistics(tgid, key, true);
+	return 0;
 }

@@ -114,14 +114,12 @@ static bool migrate_process = false;
 
 static atomic64_t fetch_cnt, op_cnt, pages_migrated;
 
-#define ADDITIONAL_PROGRAMS 3
+#define ADDITIONAL_PROGRAMS 1
 
 static struct bpf_program *additional_programs[ADDITIONAL_PROGRAMS];
 static int addtional_program_count;
 static struct bpf_link *additional_bpflinks[ADDITIONAL_PROGRAMS];
 static char * additional_programs_name[ADDITIONAL_PROGRAMS] = {
-	"save_process_cpu",
-	"sched_process_exit",
 	NULL,
 };
 
@@ -1961,15 +1959,28 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 		goto cleanup;
 	}
 
-	prog[0] = bpf_object__find_program_by_name(obj, "ibs_fetch_event");
+	if (migrate_process == false) {
+		prog[0] = bpf_object__find_program_by_name(obj,
+						"memstats_code_sampler");
+	} else {
+		prog[0] = bpf_object__find_program_by_name(obj,
+						"processstats_code_sampler");
+	}
 	if (!prog[0]) {
-		fprintf(stderr, "BPF cannot find ibs_fetch_event program\n");
+		fprintf(stderr, "BPF cannot find code sampler\n");
 		goto cleanup;
 	}
 
-	prog[1] = bpf_object__find_program_by_name(obj, "ibs_op_event");
+	if (migrate_process == false) {
+		prog[1] = bpf_object__find_program_by_name(obj,
+						"memstats_data_sampler");
+	} else {
+		prog[1] = bpf_object__find_program_by_name(obj,
+						"processstats_data_sampler");
+	}
+
 	if (!prog[1]) {
-		fprintf(stderr, "BPF cannot find ibs_op_event program\n");
+		fprintf(stderr, "BPF cannot find data sampler\n");
 		goto cleanup;
 	}
 

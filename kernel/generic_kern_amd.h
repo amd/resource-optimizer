@@ -173,6 +173,7 @@ struct numa_range {
 #define ATOMIC64_SET(v, val) atomic64_set((atomic64_t *)(v), val)
 #define ATOMIC_CMPXCHG(v, cur, new) __sync_val_compare_and_swap((v), cur, new)
 #define ATOMIC64_CMPXCHG(v, cur, new) __sync_val_compare_and_swap((v), cur, new)
+#define VALID_NODE(n) (n >= 0 && n < MAX_NUMA_NODES)
 
 #if (__clang_major__ < 14)
 #define ATOMIC_INC_RETURN(v) atomic_inc_return_dummy(v)

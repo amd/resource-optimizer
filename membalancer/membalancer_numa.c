@@ -194,10 +194,6 @@ int fill_numa_table(void)
 
         }
 
-        /* FIXUP numa table */
-        for (i = 0; i < max_nodes - 1; i++)
-                numa_table[i].last_pfn = numa_table[i + 1].first_pfn - 1;
-
         deinit_numa_node(handle);
         fill_numa_distances();
         for (i = 0; i < max_nodes; i++) {

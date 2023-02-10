@@ -1,7 +1,5 @@
 KDIR ?= <..>/linux-5.19
 LIBBPF = <..>/libbpf
-KDIR ?= /home/skurichi/fedora
-LIBBPF = /home/skurichi/libbpf
 CLANG ?= clang
 LLC ?= llc
 ARCH := $(subst x86_64,x86,$(shell arch))
