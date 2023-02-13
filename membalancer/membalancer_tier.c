@@ -40,8 +40,6 @@
 #include <numaif.h>
 #include <stdbool.h>
 
-typedef unsigned int __u32, u32;
-typedef unsigned long__u64, u64;
 #include "membalancer.h"
 #include "membalancer_utils.h"
 #include "membalancer_numa.h"

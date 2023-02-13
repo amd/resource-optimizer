@@ -32,8 +32,6 @@
 #include<stdbool.h>
 #include<stdio.h>
 
-typedef unsigned int __u32, u32;
-typedef unsigned long __u64, u64;
 #include "membalancer_utils.h"
 
 #define VENDOR_ID_LEN 12  /* cpu vendor id length in bytes */

@@ -31,6 +31,8 @@
 #ifndef MEMBALANCER_UTILS_H
 #define MEMBALANCER_UTILS_H
 
+#define _GNU_SOURCE
+#include <sched.h>
 #include<stdbool.h>
 #include<sys/types.h>
 
@@ -54,6 +56,7 @@ struct ibs_op_sample {
         unsigned long op_regs[IBSOP_REG_COUNT];
 };
 
+extern cpu_set_t node_cpumask[MAX_NUMA_NODES];
 extern struct ibs_fetch_sample fetch_samples[MAX_NUMA_NODES][MAX_IBS_SAMPLES];
 extern unsigned long fetch_samples_max[MAX_NUMA_NODES];
 extern unsigned long fetch_samples_cnt[MAX_NUMA_NODES];

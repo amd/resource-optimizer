@@ -142,13 +142,13 @@ static void update_process_statistics(u64 tgid, u64 address, bool fetch)
 {
 	struct process_stats *stats, *statsp;
 	int idx, mem_node, cpu_node = 0;
-	pid_t pid = tgid >> 32;
+	pid_t pid = (pid_t)tgid;
 
 	stats = NULL;
 	idx   = -1;
 
 	cpu_node = cpu_node_get(pid);
-	if (cpu_node < 0)
+	if (!VALID_NODE(cpu_node))
 		return;
 
 	mem_node = memory_node_get(address);

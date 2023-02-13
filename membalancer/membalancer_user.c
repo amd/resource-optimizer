@@ -627,6 +627,7 @@ static int populate_cpu_map(struct bpf_object *obj, int fd, int node,
 	int k;
 
 	k = 0;
+	CPU_ZERO(&node_cpumask[node]);
 
 	for (i = buflen - 1; i >= 0; i--) {
 		next_cpuset = (unsigned char)cpu_map[i];
@@ -642,6 +643,7 @@ static int populate_cpu_map(struct bpf_object *obj, int fd, int node,
 	
 		for (j = 0; j < 4; j++) {
 			next_cpu = k * 4 + j;
+			CPU_SET(next_cpu, &node_cpumask[node]);
 			bpf_map_update_elem(fd, &next_cpu, &node, BPF_NOEXIST);
 		}
 		k++;

@@ -57,11 +57,11 @@
 #include <ctype.h>
 #include <search.h>
 #include <sched.h>
-typedef __u32 u32;
-typedef __u64 u64;
+
 #include "membalancer.h"
 #include "membalancer_utils.h"
 #include "membalancer_numa.h"
+#include "membalancer_migrate.h"
 
 int fill_numa_address_range_map(struct bpf_object *obj)
 {
@@ -95,22 +95,45 @@ void process_migrate_processes(int map_fd)
 	u32 key, next_key;
 	struct process_stats stats;
 	int i;
+	int j = 0;
+	int target_node = 0;
+	u64 total_ref = 0;
+	u32 max_count = 0, ref_count = 0, max_ref = 0;
+	int cur_node = 0;
 
+	memset(numa_reference, 0, sizeof(struct ibs_noderef_sample));
 	key = 0;
 
 	while (bpf_map_get_next_key(map_fd, &key, &next_key) == 0) {
 		bpf_map_lookup_elem(map_fd, &next_key, &stats);
 		key = next_key;
 		bpf_map_delete_elem(map_fd, &next_key);
-
+		total_ref = 0;
+		max_ref = 0;
 		printf("PID %5u ", (unsigned int)key);
 
 		for (i = 0; i < max_nodes; i++)
 			printf("CPU%d %-5u ",
 				i, stats.cpu[i]);
-		for (i = 0; i < max_nodes; i++)
+		for (i = 0; i < max_nodes; i++) {
+			ref_count = stats.memory[i];
 			printf("MEM%d %-5u ",
-				i, stats.memory[i]);
+				i, ref_count);
+			if (ref_count > max_ref) {
+			    max_ref = ref_count;
+			    target_node = i;
+			}
+			total_ref += ref_count;
+		}
 		printf("\n");
+
+		if (((max_ref * 100)/ total_ref) > MAX_REMOTE_REF) {
+		    numa_reference[j].pid = key;
+		    numa_reference[j].max_ref = max_ref;
+		    numa_reference[j].target_node = target_node;
+		}
+		j++;
 	}
+	max_count = j;
+	move_process(max_count);
 }

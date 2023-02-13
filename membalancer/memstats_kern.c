@@ -328,17 +328,6 @@ int memstats_data_sampler(struct bpf_perf_event_data *ctx)
         if (err)
 		return err;
 
-	/*
-	if (user_space_only && IBS_KERN_SAMPLE(ip))
-		return 0;
-
-	if (!IBS_OP_LINADDR_VALID(op_data.op_regs[IBS_OP_DATA3]))
-		return 0;
-
-	if (!IBS_OP_PHYSADDR_VALID(op_data.op_regs[IBS_OP_DATA3]))
-		return 0;
-	*/
-
 	return process_op_samples(tgid, &op_data, ip, my_page_size);
 }
 

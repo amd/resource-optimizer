@@ -20,6 +20,7 @@
 
 #ifndef _GENERIC_KERN_AMD
 #define _GENERIC_KERN_AMD
+#include <linux/types.h>
 
 #define MAX_IBS_SAMPLES	(64 * 1024)
 #define MAX_STORED_PAGES (128)
@@ -29,6 +30,10 @@
 #define MAX_MAPS 8
 #define MAX_NUMA_NODES 16
 #define MAX_PROCESS_CNT 32768
+
+typedef __u32 u32;
+typedef __u64 u64;
+extern int verbose;
 
 #define CCMD_PAGE_SIZE (4096)
 

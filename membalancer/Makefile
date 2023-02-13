@@ -12,6 +12,7 @@ BIN_TIER := ${MODULE}_tier.o
 BIN_TRACER := ${MODULE}_tracer.o
 BIN_TRACER := ${MODULE}_tracer.o
 BIN_UTILS := ${MODULE}_utils.o
+BIN_MIGRATE := ${MODULE}_migrate.o
 PROCESS_STATS := processtats_user.o
 GETPADDR:= getpaddr.o
 LIBS  := ${LIBBPF}/src/libbpf.so -lz -lelf -lnuma -lpthread
@@ -48,7 +49,7 @@ CLANG_FLAGS = -I. \
 
 all:   $(BIN_KERN) \
        ${BIN_TRACER} ${BIN_NUMA} ${BIN_UTILS} ${BIN_TIER} \
-       ${PROCESS_STATS} ${HEAP} ${GETPADDR} ${BIN_USER} \
+       ${PROCESS_STATS} ${HEAP} ${BIN_MIGRATE} ${GETPADDR} ${BIN_USER} \
        ${HEAP} ${GETPADDR} ${BIN_USER}
 
 %_kern.o: %_kern.c
@@ -70,6 +71,9 @@ processtats_user.o: processtats_user.c
 	$(CLANG) -c $<  ${USR_INCLUDE}
 %_utils.o: %_utils.c
 	$(CLANG) -c $<  ${USR_INCLUDE}
+%_migrate.o: %_migrate.c
+	$(CLANG) -c $<  ${USR_INCLUDE}
+
 
 %_user.o: %_user.c
 	$(CLANG) \
@@ -77,6 +81,7 @@ processtats_user.o: processtats_user.c
 	./membalancer_tier.o \
         ./membalancer_tracer.o \
         ./membalancer_utils.o \
+        ./membalancer_migrate.o \
         ./getpaddr.o \
 	./processtats_user.o \
 	$<  ${USR_INCLUDE} -o ${MODULE} \
