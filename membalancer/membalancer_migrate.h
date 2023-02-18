@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022 Advanced Micro Devices, Inc.
+ * Copyright (c) 2023 Advanced Micro Devices, Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -22,12 +22,12 @@
 #define MAX_REMOTE_REF 50
 
 struct ibs_noderef_sample {
-    pid_t pid;
-    unsigned long target_node;
+    short target_node;
+    unsigned long pid;
     unsigned long max_ref;
 };
 
-extern struct ibs_noderef_sample numa_reference[MAX_PROCESS_CNT];
-int move_process(u32 max_count);
+extern struct ibs_noderef_sample numa_reference[MAX_PROCESS_STATS_IDX];
+int move_process(u32 max_count, bool sort);
 
 #endif

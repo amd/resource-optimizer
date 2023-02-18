@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022 Advanced Micro Devices, Inc.
+ * Copyright (c) 2023 Advanced Micro Devices, Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,13 +19,14 @@
 #include<stdio.h>
 #include<stdlib.h>
 #include<sched.h>
+#include <errno.h>
 
 #include "membalancer.h"
 #include "membalancer_migrate.h"
 
 cpu_set_t node_cpumask[MAX_NUMA_NODES];
 
-struct  ibs_noderef_sample numa_reference[MAX_PROCESS_CNT];
+struct  ibs_noderef_sample numa_reference[MAX_PROCESS_STATS_IDX];
 
 static int data_cmp(const void *p1, const void *p2)
 {
@@ -34,26 +35,57 @@ static int data_cmp(const void *p1, const void *p2)
 	return s1->max_ref - s2->max_ref;
 }
 
-int move_process(u32 max_count)
+int move_process(u32 max_count, bool sort)
 {
-    size_t target_node;
-    int i;
-    pid_t pid;
-    int err = 0;
+	size_t target_node;
+	int i;
+	u64 pid;
+	int err = 0;
+	int batch_err = 0;
+	u32 failed_migrate = 0;
 
-    qsort(numa_reference, max_count, sizeof(struct ibs_noderef_sample), data_cmp);
+	if (!max_count)
+		return 0;
+
+	if (sort)
+		qsort(numa_reference, max_count,
+				sizeof(struct ibs_noderef_sample), data_cmp);
 
     for (i = max_count - 1 ; i >= 0; i--) {
 	    pid = numa_reference[i].pid;
 	    target_node = numa_reference[i].target_node;
-	    err = sched_setaffinity(pid, sizeof(cpu_set_t), &node_cpumask[target_node]);
+	    err = sched_setaffinity((pid_t)pid, sizeof(cpu_set_t),
+						&node_cpumask[target_node]);
 	    if (err) {
-		printf("Pid %d migration failed target node %zd error %d\n", pid, target_node, err);
-	    }
-	    else  {
-		if (verbose > 3)
-		    printf("Pid %d migrated to target node %zd \n", pid, target_node);
-	    }
-    }
-    return 0;
+			/*
+			 * We will continue here for others, if any.
+			 * Capturing the failed status for the batch,
+			 * but not individually.
+			 * .i.e the last error will be returned for the
+			 * entire batch, indicating, not everything was clean.
+			 * TODO: Handle errors individually.
+			 */
+			printf("ERROR:TID %d (PID:%d) migration failed."
+				"target node %zd error %d\n",
+				(pid_t)pid, (pid_t)(pid >> 32),
+				target_node, errno);
+			/* Let it be the latest. */
+			batch_err = err;
+			failed_migrate++;
+			continue;
+		}
+		if (verbose > 3) {
+			printf("TID %d (PID %d) migrated,"
+				"to target node %zd \n",
+				(pid_t)pid, (pid_t)(pid >> 32),
+				target_node);
+		}
+	}
+
+	if (verbose >= 1)
+		printf("Total requested migration %u"
+			" and failed %u\n",
+			max_count, failed_migrate);
+
+	return batch_err;;
 }

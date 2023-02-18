@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022 Advanced Micro Devices, Inc.
+ * Copyright (c) 2023 Advanced Micro Devices, Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -27,4 +27,10 @@ int ibs_op_event(struct bpf_perf_event_data *ctx,
 int ibs_fetch_event(struct bpf_perf_event_data *ctx,
 		    struct value_fetch *fetch_data,
 		    u64 *tgid, u64 *ip);
+
+struct value_latency * get_value_latency(void);
+struct process_stats * alloc_process_stats(void);
+struct value_op * alloc_value_op(void);
+struct value_fetch * alloc_value_fetch(void);
+
 #endif

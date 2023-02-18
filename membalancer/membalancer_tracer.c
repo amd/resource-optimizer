@@ -2,7 +2,7 @@
  * membalancer_tracer.c - Automatic NUMA memory balancer Based on IBS sampler
  *
  * Copyright (c) 2015 The Libbpf Authors. All rights reserved.
- * Copyright (C) 2022 Advanced Micro Devices, Inc.
+ * Copyright (c) 2023 Advanced Micro Devices, Inc.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -201,7 +201,6 @@ static int tracer_log_entry(int fd, int type, unsigned long vaddr,
 
 void process_ibs_fetch_samples_tracer(struct bst_node **rootpp,
 				    unsigned long total,
-				    bool balancer_mode,
 				    bool user_space_only)
 {
         int i, j, node, logfd;
@@ -264,7 +263,6 @@ void process_ibs_fetch_samples_tracer(struct bst_node **rootpp,
 
 void process_ibs_op_samples_tracer(struct bst_node **rootpp,
 				   unsigned long total,
-				   bool balancer_mode,
 				   bool user_space_only)
 {
         int i, j, node, logfd;

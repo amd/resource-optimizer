@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022 Advanced Micro Devices, Inc.
+ * Copyright (c) 2023 Advanced Micro Devices, Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,10 +26,8 @@
 #define MAX_STORED_PAGES (128)
 #define PROCESSNAMELEN 32
 #define CMW_PAGE_OFFSET 0xffff880000000000
-#define MAX_CPUS 1024
-#define MAX_MAPS 8
-#define MAX_NUMA_NODES 16
-#define MAX_PROCESS_CNT 32768
+#define MAX_NUMA_NODES 64
+#define MAX_CPU_CORES 1024
 
 typedef __u32 u32;
 typedef __u64 u64;
@@ -37,16 +35,18 @@ extern int verbose;
 
 #define CCMD_PAGE_SIZE (4096)
 
+#define MAX_PROCESS_STATS_IDX 1024
+
 enum {
 	IBS_FETCH_EVENT,
 	IBS_OP_EVENT,
 };
 
 enum {
-        IBS_FETCH_CTL,
-        IBS_FETCH_LINADDR,
-        IBS_FETCH_PHYSADDR,
-        IBSFETCH_REG_COUNT,
+	IBS_FETCH_CTL,
+	IBS_FETCH_LINADDR,
+	IBS_FETCH_PHYSADDR,
+	IBSFETCH_REG_COUNT,
 };
 
 enum balancer_knobs {
@@ -59,6 +59,7 @@ enum balancer_knobs {
 	KERN_VERBOSE,
 	USER_SPACE_ONLY,
 	PROCESS_STATS,
+	AUTO_TUNE,
 	LAST_KNOB,
 	TOTAL_KNOBS,
 };

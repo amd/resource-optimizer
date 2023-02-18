@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022 Advanced Micro Devices, Inc.
+ * Copyright (c) 2023 Advanced Micro Devices, Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -59,7 +59,7 @@ struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, int);
 	__type(value, int);
-	__uint(max_entries, MAX_CPUS);
+	__uint(max_entries, MAX_CPU_CORES);
 } cpu_map SEC(".maps");
 
 struct {
@@ -160,11 +160,12 @@ static void init_function(void)
 			continue;
 		}
 
-		if (i == PROCESS_STATS) {
+		if ((i == PROCESS_STATS) || (i == AUTO_TUNE)) {
 			if (valuep != NULL && (*valuep > 0)) {
-				processtats = true;
 				load_numa_ranges();
 			}
+			if (i == PROCESS_STATS)
+				processtats = true;
 		}
 
 		if (i == USER_SPACE_ONLY)
@@ -199,32 +200,11 @@ static inline void inc_ibs_op_samples(void)
         bpf_map_update_elem(&op_counter, &key, &value, BPF_ANY);
 }
 
-int cpu_num_get(pid_t pid)
-{
-	struct task_struct *task = (void *)bpf_get_current_task();
-	int cpu;
-
-	if (!task)
-		return -1;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5,19,0)
-	bpf_probe_read(&cpu, sizeof(cpu), &task->cpu);
-#else
-	/* Using recent_used_cpu instead of recent_used_cpu,
-	 * as it accurately reports what is required.
-	 * bpf_probe_read(&cpu, sizeof(cpu), &task->on_cpu);
-	 */
-	bpf_probe_read(&cpu, sizeof(cpu), &task->recent_used_cpu);
-#endif
-
-	return cpu;
-
-}
-
-int cpu_node_get(pid_t pid)
+int cpu_node_get(void)
 {
 	int cpu, *nodep;
 
-	cpu = cpu_num_get(pid);
+	cpu = bpf_get_smp_processor_id();
 	if (cpu < 0)
 		return -1;
 
@@ -398,5 +378,6 @@ int ibs_op_event(struct bpf_perf_event_data *ctx,
 
 #include "memstats_kern.c"
 #include "processtats_kern.c"
+#include "heap_kern.c"
 
 char _license[] SEC("license") = "GPL";

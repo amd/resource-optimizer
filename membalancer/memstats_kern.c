@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022 Advanced Micro Devices, Inc.
+ * Copyright (c) 2023 Advanced Micro Devices, Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -68,19 +68,25 @@ struct {
 	INC_COUNTER(counts, node, 6 + (base));\
 	INC_COUNTER(counts, node, 7 + (base));
 
-void inc_resource_usage(int node,
-			volatile u32 counts[MAX_NUMA_NODES])
-{
+#define RESOURCE_COUNTERS_PER_ITER 8
 
-	_Static_assert(MAX_NUMA_NODES == 16, "MAX_NUMA_NODES != 16");
+static void inc_resource_usage(const int node,
+					volatile u32 counts[MAX_NUMA_NODES])
+{
+	int i;
+	_Static_assert(MAX_NUMA_NODES == 64, "MAX_NUMA_NODES != 64");
+	_Static_assert(RESOURCE_COUNTERS_PER_ITER == 8,
+		"RESOURCE_COUNTERS_PER_ITER != 8");
+	_Static_assert(RESOURCE_COUNTERS_PER_ITER <= MAX_NUMA_NODES,
+		"RESOURCE_COUNTERS_PER_ITER > MAX_NUMA_NODES");
 
 	if (!VALID_NODE(node))
-		return; 
+		return;
 
-	if (node < MAX_NUMA_NODES / 2) {
-		INC_COUNTERS(counts, node, 0);
-	} else {
-		INC_COUNTERS(counts, node, MAX_NUMA_NODES / 2);
+	for (i = 0; i < (MAX_NUMA_NODES / RESOURCE_COUNTERS_PER_ITER); i++) {
+		if ((node / RESOURCE_COUNTERS_PER_ITER) == i) {
+			INC_COUNTERS(counts, node, i * RESOURCE_COUNTERS_PER_ITER);
+		}
 	}
 }
 
@@ -92,63 +98,21 @@ static void save_node_usage(pid_t pid,
 	if (!per_numa_access_stats)
 		return;
 
-	node = cpu_node_get(pid);
+	node = cpu_node_get();
 	if (!VALID_NODE(node))
 		return;
+	/*
+	 * Cannot access dynamic array index. To avoid eBPF
+	 * verifuer failure, a long indirect route needs to
+	 * be taken.
+	 */
+
 	/*
 	ATOMIC_INC(&counts[*nodep]);
 	*/
 	inc_resource_usage(node, counts);
 
 	return;
-}
-
-#define VALUE_LATENCY_IDX 64
-static struct value_latency value_latency_global[VALUE_LATENCY_IDX];
-static u64 value_latency_free[VALUE_LATENCY_IDX];
-static inline struct value_latency * get_value_latency(unsigned int *idx)
-{
-	unsigned int i;
-
-#if (__clang_major__ >= 14)
-	for (i = 0; i < VALUE_LATENCY_IDX; i++) {
-		if (ATOMIC64_CMPXCHG(&value_latency_free[i], 0, 1) == 0) {
-			*idx = i;
-			return &value_latency_global[i];
-		}
-	}
-
-	return NULL;
-#else
-	{
-		unsigned int j;
-		static volatile unsigned int next_value_idx;
-	
-		/*
-		 * Workaround in the absence of ATOMIC64_CMPXCHG
-		 * support by LLVM. Remove this code block entirely
-		 * once compare-and-exchange works.
-		 */
-		i = ATOMIC_READ(&next_value_idx);
-		ATOMIC_INC(&next_value_idx);
-		j = i % VALUE_LATENCY_IDX;
-		*idx = j;
-
-		return &value_latency_global[j];
-	}
-#endif
-}
-
-static inline void put_value_latency(int idx)
-{
-	int i;
-
-	for (i = 0; i < VALUE_LATENCY_IDX; i++) {
-		if (i == idx) {
-			ATOMIC64_SET(&value_latency_free[i], 0);
-			break;
-		}
-	}
 }
 
 static inline void save_latency(u32 lat, u64 key, bool op, int idx)
@@ -169,19 +133,18 @@ static inline void save_latency(u32 lat, u64 key, bool op, int idx)
 			}
 		}
 		ATOMIC_INC(&valuep->idx);
-	} else {
-		valuep = get_value_latency(&i);
-		if (!valuep) {
-			char msg[] = "Cannot find value for key %p";
-
-			bpf_trace_printk(msg, sizeof(msg), key);
-			return;
-		}
-
-		ATOMIC_SET(&valuep->idx, 0);
-		bpf_map_update_elem(&latency_map, &key, valuep, BPF_NOEXIST);
-		put_value_latency(i);
+		return;
 	}
+
+	valuep = get_value_latency();
+	if (!valuep) {
+		char msg[] = "Cannot find value for key %p";
+		bpf_trace_printk(msg, sizeof(msg), key);
+		return;
+	}
+
+	ATOMIC_SET(&valuep->idx, 0);
+	bpf_map_update_elem(&latency_map, &key, valuep, BPF_NOEXIST);
 }
 
 static void save_fetch_latency(u64 reg, u64 addr, int idx)
@@ -320,27 +283,37 @@ static int process_op_samples(u64 tgid, struct value_op *op_data,
 SEC("perf_event")
 int memstats_data_sampler(struct bpf_perf_event_data *ctx)
 {
-	struct value_op op_data;
+	struct value_op *op_data;
 	int err;
 	u64 ip, tgid;
 
-        err = ibs_op_event(ctx, &op_data, &tgid, &ip);
-        if (err)
+	op_data = alloc_value_op();
+	if (!op_data)
+		return -ENOMEM;
+
+	memset(op_data, 0, sizeof(*op_data));
+	err = ibs_op_event(ctx, op_data, &tgid, &ip);
+	if (err)
 		return err;
 
-	return process_op_samples(tgid, &op_data, ip, my_page_size);
+	return process_op_samples(tgid, op_data, ip, my_page_size);
 }
 
 SEC("perf_event")
 int memstats_code_sampler(struct bpf_perf_event_data *ctx)
 {
-	struct value_fetch fetch_data;
+	struct value_fetch *fetch_data;
 	int err;
 	u64 ip, tgid;
 
-        err = ibs_fetch_event(ctx, &fetch_data, &tgid, &ip);
-        if (err)
+	fetch_data = alloc_value_fetch();
+	if (!fetch_data)
+		return -ENOMEM;
+
+	memset(fetch_data, 0, sizeof(*fetch_data));
+	err = ibs_fetch_event(ctx, fetch_data, &tgid, &ip);
+	if (err)
 		return err;
 
-	return process_fetch_samples(tgid, &fetch_data, ip, my_page_size);
+	return process_fetch_samples(tgid, fetch_data, ip, my_page_size);
 }

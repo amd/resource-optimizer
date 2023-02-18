@@ -2,7 +2,7 @@
  * membalancer_user.c - Automatic NUMA memory balancer Based on IBS sampler
  *
  * Copyright (c) 2015 The Libbpf Authors. All rights reserved.
- * Copyright (C) 2022 Advanced Micro Devices, Inc.
+ * Copyright (c) 2023 Advanced Micro Devices, Inc.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -64,6 +64,10 @@ typedef __u64 u64;
 #include "membalancer.h"
 #include "membalancer_utils.h"
 #include "membalancer_numa.h"
+#include "membalancer_migrate.h"
+#include "heap_user.h"
+#include "membalancer_user.h"
+
 #ifndef PAGE_SIZE
 #define PAGE_SIZE 4096
 #endif
@@ -87,17 +91,18 @@ static int nr_cpus;
 static double min_pct = 0.01;
 static bool user_space_only = false;
 int verbose = 2;
-static bool balancer_mode = false;
+
+enum tuning_mode tuning_mode;
 static bool histogram_format = false;
 static float maximizer_mode = 0.2;
 static int report_frequency = 1;
 static char *trace_dir;
 bool tracer_physical_mode = true;
 static unsigned int min_ibs_samples = MIN_IBS_CLASSIC_SAMPLES;
-static int migration_timeout_sec = 20;
+static int migration_timeout_sec = 60;
 static int min_migrated_pages = MIN_MIGRATED_PAGES;
 
-static char cmd_args[]  = "c:f:P:p:r:m:M:v:U:T:t:D:L:B:uhcbHVlX";
+static char cmd_args[]  = "c:f:P:p:r:m:M:v:U:T:t:D:L:B:uhcbHVlXA::";
 static int ibs_fetch_device = -1;
 static int ibs_op_device    = -1;
 #define FETCH_CONFIG        57
@@ -110,18 +115,15 @@ static int ibs_op_config;
 static unsigned int cpu_nodes;
 static pid_t mypid;
 static bool l3miss = false;
-static bool migrate_process = false;
+
+static u32 sampling_interval_cnt = 25;
+static u32 sampling_iter;
+
+bool proc_data_sampling_done = false;
+
+u32 curr_proc_data_map_idx;
 
 static atomic64_t fetch_cnt, op_cnt, pages_migrated;
-
-#define ADDITIONAL_PROGRAMS 1
-
-static struct bpf_program *additional_programs[ADDITIONAL_PROGRAMS];
-static int addtional_program_count;
-static struct bpf_link *additional_bpflinks[ADDITIONAL_PROGRAMS];
-static char * additional_programs_name[ADDITIONAL_PROGRAMS] = {
-	NULL,
-};
 
 #define IBS_FETCH_DEV "/sys/devices/ibs_fetch/type"
 #define IBS_OP_DEV    "/sys/devices/ibs_op/type"
@@ -183,7 +185,9 @@ static void usage(const char *cmd)
 {
 	printf("USAGE: %s [-f freq] [-p <pid,..>] [-P <parent pid,..>] "
 			"[-u] [-h] [-H] [-V] [-l] [-M]"
-			"[-T <numa tier information> ] [-b] "
+			"[-T <numa tier information> ] [-b]"
+			"[-X]"
+			"[-A<sampling count>]"
 			"[-m <percentage>] "
 			"[-v <verbose>] [-U <Upgrade size in bytes] "
 			"[-D <Downgrade size in bytes] "
@@ -230,10 +234,17 @@ static void usage(const char *cmd)
 	printf("%s -f 25 -u -P 1234 -v1 -m 0.0001 -M 1 -r 2 100 -b\n"
 	       "-H -U 1048576 -D 1048576\n", cmd);
 	printf("\n");
-	printf("3. Example for memory access tracer or pattern analyzer\n");
+	printf("3. Example for Process migration configuration:\n");
+	printf("%s -f 25 -u -P 1234 -v1 -m 0.0001 -M 1 -r 2 1000 -H -X\n", cmd);
+	printf("\n");
+	printf("4. Example for Auto-tuning configuration:\n");
+	printf("%s -f 25 -u -P 1234 -v1 -m 0.0001 -M 1 -r 2 1000 -H -A50\n"
+			"default sampling count %u\n", cmd, sampling_interval_cnt);
+	printf("\n");
+	printf("5. Example for memory access tracer or pattern analyzer\n");
 	printf("%s -f 25 -u -P 99053 -v1 -m 0.0001 -M 1 -r 2 1000 -L /tmp/ \n",
 		cmd);
-	printf("4. Example for list of cpus\n");
+	printf("6. Example for list of cpus\n");
 	printf("%s -u -P 99053 -c 1,2,3,10-20,30-40\n",
 		cmd);
 
@@ -1206,13 +1217,12 @@ static void process_ibs_fetch_samples(struct bst_node **rootpp,
 				      unsigned long total)
 {
 	if (trace_dir)
-		process_ibs_fetch_samples_tracer(rootpp, total, balancer_mode,
-						 user_space_only);
+		process_ibs_fetch_samples_tracer(rootpp, total, user_space_only);
 	else if (tier_mode)
-		process_ibs_fetch_samples_tier(rootpp, total, balancer_mode,
+		process_ibs_fetch_samples_tier(rootpp, total, (tuning_mode & MEMORY_MOVE),
 					       user_space_only);
 	else
-		process_ibs_fetch_samples_numa(rootpp,  total, balancer_mode,
+		process_ibs_fetch_samples_numa(rootpp,  total, (tuning_mode & MEMORY_MOVE),
 					       user_space_only);
 }
 
@@ -1351,13 +1361,12 @@ static void process_ibs_op_samples(struct bst_node **rootpp,
 				   unsigned long total)
 {
 	if (trace_dir)
-		process_ibs_op_samples_tracer(rootpp, total, balancer_mode,
-					      user_space_only);
+		process_ibs_op_samples_tracer(rootpp, total, user_space_only);
 	else if (tier_mode)
-		process_ibs_op_samples_tier(rootpp, total, balancer_mode,
+		process_ibs_op_samples_tier(rootpp, total, (tuning_mode & MEMORY_MOVE),
 					    user_space_only);
 	else
-		process_ibs_op_samples_numa(rootpp, total, balancer_mode,
+		process_ibs_op_samples_numa(rootpp, total, (tuning_mode & MEMORY_MOVE),
 					    user_space_only);
 }
 
@@ -1674,18 +1683,48 @@ static void process_samples(int *map_fd, int msecs, int fetch)
 		atomic64_sub(&ibs_pending_op_samples, op_cnt);
 	}
 
-	if (migrate_process) {
+	if (tuning_mode == PROCESS_MOVE) {
 		if ((fetch_cnt >= MIN_IBS_FETCH_SAMPLES) ||
 			(op_cnt >= MIN_IBS_OP_SAMPLES))
-			process_migrate_processes(map_fd[3]);
+			process_migrate_processes(map_fd[PROC_STAT_MAP]);
 		return;
+	}
+
+	if (tuning_mode == AUTOTUNE && !proc_data_sampling_done) {
+		/* Capture and update the process run data
+		 * till the sampling_interval_cnt.
+		 */
+		if (sampling_interval_cnt && sampling_iter % sampling_interval_cnt) {
+			printf("Capturing process run data :"
+				"sampling_iter=%u/%u\n", sampling_iter, sampling_interval_cnt);
+			update_process_run_data(map_fd[PROC_STAT_MAP]);
+			return;
+        } else {
+			printf("Done capturing data."
+				"Analyzing and setting process tuning.\n");
+			analyze_and_set_autotune_params(&curr_proc_data_map_idx);
+			proc_data_sampling_done = true;
+		}
+
+	}
+
+	if (tuning_mode == AUTOTUNE) {
+		if (curr_proc_data_map_idx) {
+			assert(proc_data_sampling_done == true);
+			move_process(curr_proc_data_map_idx, false);
+
+			curr_proc_data_map_idx = 0; /* set to indicate no valid entry */
+			return;
+		}
+		/* Setting memory tuning for rest of the processes */
+		tuning_mode |= MEMORY_MOVE;
 	}
 
 	total_freq_fetch = 0;
 	total_freq_op = 0;
 
 	if (fetch_cnt >= MIN_IBS_FETCH_SAMPLES) {
-		fetch_cnt = get_ibs_fetch_samples(map_fd[0],
+		fetch_cnt = get_ibs_fetch_samples(map_fd[IBS_FETCH_MAP],
 						  &total_freq_fetch);
 		if (fetch_cnt) {
 			update_sample_statistics(fetch_samples_max, true);
@@ -1694,7 +1733,7 @@ static void process_samples(int *map_fd, int msecs, int fetch)
 	}
 
 	if (op_cnt >= MIN_IBS_OP_SAMPLES) {
-		op_cnt = get_ibs_op_samples(map_fd[1], &total_freq_op);
+		op_cnt = get_ibs_op_samples(map_fd[IBS_OP_MAP], &total_freq_op);
 		if (op_cnt) {
 			update_sample_statistics(op_samples_max, false);
 			process_ibs_op_samples(&root, total_freq_op);
@@ -1839,6 +1878,8 @@ static void ibs_process_samples(struct ibs_sample_worker *worker,
 		pthread_cond_signal(&worker[i].cv);
 		pthread_mutex_unlock(&worker[i].mtx);
 	}
+	/* Increment the sampling count,be it fetch or op */
+	sampling_iter++;
 }
 
 static void print_migration_status(void)
@@ -1869,7 +1910,7 @@ static int pages_migration_status(int msecs,
 	int max_secs;
 	struct timeval end;
 
-	if (!balancer_mode)
+	if (!(tuning_mode & MEMORY_MOVE))
 		return 0;
 
 	if (migration_timeout_sec <= 0)
@@ -1916,6 +1957,122 @@ static void set_knob(int fd, int knob, int value)
 	bpf_map_update_elem(fd, &knob, &value, BPF_NOEXIST);
 }
 
+static int load_bpf_programs(struct bpf_program **prog,
+				struct bpf_object *obj, char **prog_names, short prog_count)
+{
+	int  sts = 0;
+	int i;
+
+	for (i=0; i< prog_count; i++)
+	{
+		if (!prog_names[i]) {
+			continue;
+		}
+		/* No need to clean up any stale pointers.
+		 * They will be overridden anyway.
+		 */
+		prog[i] = bpf_object__find_program_by_name(obj,
+								prog_names[i]);
+		if (!prog[i]) {
+			fprintf(stderr, "BPF cannot find prrgram %s to load.\n", prog_names[i]);
+			sts = -EINVAL;
+			break;
+		}
+		if (verbose >= 5)
+			printf("loaded program =%s\n", prog_names[i]);
+	}
+	return sts;
+}
+
+static int load_perf_fd_bpf_maps(int *map_fd, struct bpf_object *obj,
+				char **map_names, short map_count)
+{
+	int sts = 0;
+
+	for (int i=0; i< map_count; i++) {
+		/* We do not 'overload' the index for maps.
+		 * The relative index defined in map_enum has to be maintaied,
+		 * so that rest of the code can continue with their respective
+		 * fds specific to a profile template(memory or process).
+		 */
+		if (map_names[i] == NULL) {
+			/* This index of map fd is not required for this profile.
+			 * Just we no need to do anything here.
+			 */
+			if (verbose >= 5)
+				printf("Map fd for index %d is skipped\n",i);
+			continue;
+		}
+
+		map_fd[i] = bpf_object__find_map_fd_by_name(obj, map_names[i]);
+
+		if ((map_fd[i]) < 0) {
+			fprintf(stderr, "BPF cannot find %s\n", map_names[i]);
+			sts = -EINVAL;
+			break;
+		}
+		if (verbose >= 5)
+			printf("Map fd is set for map: %s\n", map_names[i]);
+	}
+
+	return sts;
+}
+
+static void close_perf_fd_bpf_maps(int *map_fd, enum tuning_profile profile_to_open)
+{
+	char **profile_map_fd_names = NULL;
+
+	if (profile_to_open == MEMORY)
+		profile_map_fd_names = memory_map_fd_names;
+	else if (profile_to_open == PROCESS)
+		profile_map_fd_names = process_map_fd_names;
+
+	assert(profile_map_fd_names != NULL);
+
+	for (int i=0; i< TOTAL_MAPS; i++) {
+		if ((map_fd[i] != -1) && (profile_map_fd_names[i] == NULL)) {
+			close(map_fd[i]);
+			map_fd[i] = -1;
+			if (verbose >= 5)
+				printf("Map fd is closed for map index: %d\n", i);
+		}
+	}
+}
+
+static int populate_perf_fd_bpf_maps_and_bpf_programs(struct bpf_program **prog,
+				int *map_fd, struct bpf_object *obj, enum tuning_profile profile)
+{
+	int sts = 0;
+
+	switch (profile)
+	{
+		case MEMORY:
+			if (verbose >= 5)
+				printf("Loading bpf programs and maps for memory profile\n");
+			sts = load_bpf_programs(prog, obj,
+						memory_profile_program_names, TOTAL_BPF_PROGRAMS);
+			if (sts)
+				break;
+			sts = load_perf_fd_bpf_maps(map_fd, obj,
+						memory_map_fd_names, TOTAL_MAPS);
+			break;
+        case PROCESS:
+			if (verbose >= 5)
+				printf("Loading bpf programs and maps for process profile\n");
+			sts = load_bpf_programs(prog, obj,
+						process_profile_program_names, TOTAL_BPF_PROGRAMS);
+			if (sts)
+				break;
+			sts = load_perf_fd_bpf_maps(map_fd, obj,
+						process_map_fd_names, TOTAL_MAPS);
+			break;
+		default:
+			printf("Invalid profile for tuning\n");
+			sts = -EINVAL;
+	}
+
+	return sts;
+}
 
 static int balancer_function_int(const char *kernobj, int freq, int msecs,
 				 char  *include_pids, char *include_ppids,
@@ -1924,15 +2081,16 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 	int msecs_nap;
 	int err = -1;
 	struct bpf_object *obj = NULL;
-	struct bpf_program *prog[3] = {NULL, NULL, NULL};
+	struct bpf_program *prog[TOTAL_BPF_PROGRAMS];
 	struct bpf_link **fetch_links = NULL, **op_links = NULL;
 	struct bpf_link **perf_links = NULL;
 	char filename[256];
-	int map_fd[MAX_MAPS];
+	int map_fd[TOTAL_MAPS];
 	unsigned long fetch_cnt, op_cnt;
 	unsigned long fetch_cnt_old, op_cnt_old;
 	unsigned long fetch_cnt_new, op_cnt_new;
 	unsigned long ibs_samples_old = 0, pages_migrated_old = 0;
+	enum tuning_mode tuning_mode_old = tuning_mode;
 	struct timeval start;
 
 	fetch_links = calloc(nr_cpus, sizeof(struct bpf_link *));
@@ -1961,35 +2119,39 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 		goto cleanup;
 	}
 
-	if (migrate_process == false) {
-		prog[0] = bpf_object__find_program_by_name(obj,
-						"memstats_code_sampler");
-	} else {
-		prog[0] = bpf_object__find_program_by_name(obj,
-						"processstats_code_sampler");
-	}
-	if (!prog[0]) {
-		fprintf(stderr, "BPF cannot find code sampler\n");
-		goto cleanup;
-	}
-
-	if (migrate_process == false) {
-		prog[1] = bpf_object__find_program_by_name(obj,
-						"memstats_data_sampler");
-	} else {
-		prog[1] = bpf_object__find_program_by_name(obj,
-						"processstats_data_sampler");
-	}
-
-	if (!prog[1]) {
-		fprintf(stderr, "BPF cannot find data sampler\n");
-		goto cleanup;
-	}
-
 	/* load BPF program */
 	if (bpf_object__load(obj)) {
 		fprintf(stderr, "ERROR: loading BPF object file failed\n");
 		goto cleanup;
+	}
+
+	/* Resetting BPF map fd list */
+	memset(map_fd, -1, TOTAL_MAPS*sizeof(int));
+
+	if (tuning_mode == UNINITIALIZED || /* Profile mode */
+		tuning_mode == MEMORY_MOVE) {
+		err = populate_perf_fd_bpf_maps_and_bpf_programs(prog,
+						map_fd, obj, MEMORY);
+		if (err) {
+			/* We really nothing much to clean up here,
+			 * as we need to exit our application!
+			 */
+			fprintf(stderr, "ERROR:(%d)Could not load all"
+						"the required programs and maps!!\n", err);
+			goto cleanup;
+		}
+	} else {
+		assert((tuning_mode == AUTOTUNE) || (tuning_mode == PROCESS_MOVE));
+		err = populate_perf_fd_bpf_maps_and_bpf_programs(prog,
+						map_fd, obj, PROCESS);
+		if (err) {
+			/* We really nothing much to clean up here,
+			 * as we need to exit our application!
+			 */
+			fprintf(stderr, "ERROR:(%d)Could not load all"
+						"the required programs and maps!!\n", err);
+			goto cleanup;
+		}
 	}
 
 	cpu_nodes = fill_cpu_nodes(obj);
@@ -2002,68 +2164,42 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 	if (process_include_pids(obj, include_ppids, true))
 		goto cleanup;
 
-	map_fd[0] = bpf_object__find_map_fd_by_name(obj, "ibs_fetch_map");
-	if (map_fd[0] < 0) {
-		fprintf(stderr, "BPF cannot find ibs_fetch_map\n");
-		goto cleanup;
-	}
-
-	map_fd[1] = bpf_object__find_map_fd_by_name(obj, "ibs_op_map");
-	if (map_fd[1] < 0) {
-		fprintf(stderr, "BPF cannot find ibs_op_map\n");
-		goto cleanup;
-	}
-
-        map_fd[3] = bpf_object__find_map_fd_by_name(obj, "process_stats_map");
-        if (map_fd[3] < 0) {
-                fprintf(stderr, "BPF cannot find map fetch_counter\n");
-                goto cleanup;
-        }
-
-        map_fd[4] = bpf_object__find_map_fd_by_name(obj, "fetch_counter");
-        if (map_fd[4] < 0) {
-                fprintf(stderr, "BPF cannot find map fetch_counter\n");
-                goto cleanup;
-        }
-
-        map_fd[5] = bpf_object__find_map_fd_by_name(obj, "op_counter");
-        if (map_fd[5] < 0) {
-                fprintf(stderr, "BPF cannot find map op_counter\n");
-                goto cleanup;
-        }
-
-        map_fd[6] = bpf_object__find_map_fd_by_name(obj, "knobs");
-        if (map_fd[6] < 0) {
-                fprintf(stderr, "BPF cannot find map knobs\n");
-                goto cleanup;
-        }
-
 	if (include_ppids)
-		set_knob(map_fd[6], CHECK_PPID, 1);
+		set_knob(map_fd[KNOBS], CHECK_PPID, 1);
 
 	if (tier_mode ==  false)
-		set_knob(map_fd[6], PER_NUMA_ACCESS_STATS, 1);
+		set_knob(map_fd[KNOBS], PER_NUMA_ACCESS_STATS, 1);
 
 	if (user_space_only)
-		set_knob(map_fd[6], USER_SPACE_ONLY, 1);
+		set_knob(map_fd[KNOBS], USER_SPACE_ONLY, 1);
 
-
+	fill_value_latency_buffers(obj);
 
 	/*
-	set_knob(map_fd[6], PER_NUMA_LATENCY_STATS, 1);
+	set_knob(map_fd[KNOBS], PER_NUMA_LATENCY_STATS, 1);
 	*/
-	set_knob(map_fd[6], MY_PAGE_SIZE, CCMD_PAGE_SIZE);
-	set_knob(map_fd[6], MY_OWN_PID, getpid());
-	set_knob(map_fd[6], KERN_VERBOSE, verbose);
-	if (migrate_process) {
+	set_knob(map_fd[KNOBS], MY_PAGE_SIZE, CCMD_PAGE_SIZE);
+	set_knob(map_fd[KNOBS], MY_OWN_PID, getpid());
+	set_knob(map_fd[KNOBS], KERN_VERBOSE, verbose);
+
+	if (tuning_mode == PROCESS_MOVE ||
+		tuning_mode == AUTOTUNE) {
 		if (fill_numa_address_range_map(obj) <= 0) {
 			err = -EINVAL;
 			goto cleanup;
 		}
-		set_knob(map_fd[6], PROCESS_STATS, 1);
+
+		if (tuning_mode == PROCESS_MOVE)
+			set_knob(map_fd[KNOBS], PROCESS_STATS, 1);
+		else
+			set_knob(map_fd[KNOBS], AUTO_TUNE, 1);
 	}
 
-	set_knob(map_fd[6], LAST_KNOB, 1);
+	set_knob(map_fd[KNOBS], LAST_KNOB, 1);
+
+	err = init_heap(obj);
+	if (err != 0)
+		goto cleanup;
 
 	err = parse_additional_bpf_programs(obj);
 	if (err) {
@@ -2100,9 +2236,38 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 	signal(SIGINT, interrupt_signal);
 	gettimeofday(&start, NULL);
 
+
 	while (!err) {
 
-		if (ibs_op_sampling_begin(freq, prog[1], op_links, cpusetp) != 0) {
+		if (tuning_mode_old != tuning_mode) {
+			/* There is change in tuning_mode value;
+			 * due to MEMORY_MOVE set with AUTOTUNE after
+			 * process sampling.
+			 */
+			assert(tuning_mode == (AUTOTUNE | MEMORY_MOVE));
+			assert(tuning_mode_old == AUTOTUNE );
+
+			/* Close the map fds which are not required
+			 * anymore for this profile.
+			 * For bpf programs, nothing to close.
+			 * The new program pointers will override them.
+			 */
+			close_perf_fd_bpf_maps(map_fd, MEMORY); /* Passing profile to open */
+			err = populate_perf_fd_bpf_maps_and_bpf_programs(prog,
+							map_fd, obj, MEMORY);
+			if (err) {
+				/* We really nothing much to clean up here,
+				 * as we need to exit our application!
+				 */
+				fprintf(stderr, "ERROR:(%d)Could not load"
+						"all the required programs and maps!!\n", err);
+				goto cleanup;
+			}
+
+			tuning_mode_old = tuning_mode;
+        }
+
+		if (ibs_op_sampling_begin(freq, prog[IBS_DATA_SAMPLER], op_links, cpusetp) != 0) {
 			if (l3miss)
 				fprintf(stderr,
 					"IBS OP L3 miss fitlering "
@@ -2112,7 +2277,7 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 					"IBS OP sampling not supported\n");
 		}
 
-		if (ibs_fetch_sampling_begin(freq, prog[0], fetch_links, cpusetp) != 0) {
+		if (ibs_fetch_sampling_begin(freq, prog[IBS_CODE_SAMPLER], fetch_links, cpusetp) != 0) {
 			if (l3miss)
 				fprintf(stderr,
 					"IBS Fetch L3 miss filtering "
@@ -2122,15 +2287,15 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 				fprintf(stderr,
 					"IBS Fetch sampling not supported\n");
 
-			if (perf_sampling_begin(freq, prog[2], perf_links, cpusetp) != 0)
+			if (perf_sampling_begin(freq, prog[NON_IBS_CODE_SAMPLER], perf_links, cpusetp) != 0)
 				goto cleanup;
 
 		}
 
 		for (; ;)  {
-			fetch_cnt = peek_ibs_samples(map_fd[4], fetch_cnt_old,
+			fetch_cnt = peek_ibs_samples(map_fd[FETCH_COUNTER_MAP], fetch_cnt_old,
 							&fetch_cnt_new);
-			op_cnt    = peek_ibs_samples(map_fd[5], op_cnt_old,
+			op_cnt    = peek_ibs_samples(map_fd[OP_COUNTER_MAP], op_cnt_old,
 						     &op_cnt_new);
 
 			if ((fetch_cnt >= MIN_IBS_SAMPLES)) {
@@ -2187,7 +2352,7 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 
 		usleep(msecs * 1000 / maximizer_mode);
 	}
-	balancer_cleanup(map_fd[0], map_fd[1]);
+	balancer_cleanup(map_fd[IBS_FETCH_MAP], map_fd[IBS_OP_MAP]);
 
 cleanup:
 	deinit_ibs_sample_worker(atomic64_read(&ibs_workers));
@@ -2225,13 +2390,33 @@ static int balancer_function(const char *kernobj, int freq, int msecs,
 #if 1
 	int status;
 	pid_t pid;
+	int pipefd[2];
+	enum tuning_mode curr_tuning_mode;
+
+	if (pipe(pipefd) == -1)
+		return -EINVAL;
 
 	pid = fork();
 	if (pid == 0) {
+		close(pipefd[0]);
 		status = balancer_function_int(kernobj, freq, msecs,
 					include_pids, include_ppids, cpusetp);
+		write(pipefd[1], &tuning_mode, sizeof(enum tuning_mode));
+		close(pipefd[1]);
 		exit(status);
 	}
+
+	close(pipefd[1]);
+	if (read(pipefd[0], &curr_tuning_mode, sizeof(enum tuning_mode)) > 0) {
+		if (verbose >= 5)
+			printf("tuning_mode was %d and"
+				"curr tuning mode =%d\n",tuning_mode, curr_tuning_mode);
+	}
+
+	close(pipefd[0]);
+
+	if (curr_tuning_mode & MEMORY_MOVE)
+		tuning_mode = MEMORY_MOVE;
 
 	wait(&status);
 
@@ -2252,8 +2437,9 @@ int main(int argc, char **argv)
 	int freq = MEMB_CLOCK;
 	int msecs = MEMB_INTVL;
 	int err = -1;
-        struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
+	struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
 	char *tier_args = NULL;
+	int sampling_count;
 	char *include_pids = NULL;
 	char *include_ppids = NULL;
 	char *include_cpus = NULL;
@@ -2295,7 +2481,12 @@ int main(int argc, char **argv)
 			l3miss = true;
 			break;
 		case 'b':
-			balancer_mode = true;
+			if (tuning_mode != UNINITIALIZED) {
+				printf("Different tuning mode (with -X or -A) is already set!!\n");
+				usage(argv[0]);
+				return -1;
+			}
+			tuning_mode = MEMORY_MOVE;
 			break;
 		case 'm':
 			min_pct = atof(optarg);
@@ -2370,8 +2561,29 @@ int main(int argc, char **argv)
 			trace_dir = optarg;
 			break;
 		case 'X':
-			migrate_process = true;
+			if (tuning_mode != UNINITIALIZED) {
+				printf("Different tuning mode (with -b or -A)"
+					"is already set!!\n");
+				usage(argv[0]);
+				return -1;
+			}
+			tuning_mode = PROCESS_MOVE;
 			break;
+		case 'A':
+			if (tuning_mode != UNINITIALIZED) {
+				printf("The option to balance workload"
+					"was already chosen(-X or -b).\n");
+				usage(argv[0]);
+				return -1;
+			}
+			if (optarg) {
+				sampling_count = atoi(optarg);
+				if (sampling_count >= 0)
+					sampling_interval_cnt = sampling_count;
+			}
+			tuning_mode = AUTOTUNE;
+			break;
+
 		default:
 			usage(argv[0]);
 			return -1;

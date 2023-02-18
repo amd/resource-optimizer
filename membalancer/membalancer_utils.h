@@ -3,7 +3,7 @@
  * and analyze the instruction and data (if available) samples.
  *
  * Copyright (c) 2015 The Libbpf Authors. All rights reserved.
- * Copyright (C) 2022 Advanced Micro Devices, Inc.
+ * Copyright (c) 2023 Advanced Micro Devices, Inc.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -75,12 +75,10 @@ void update_sample_statistics_tracer(unsigned long *samples,
 				     bool fetch);
 void process_ibs_op_samples_tracer(struct bst_node **rootpp,
                                    unsigned long total,
-				   bool balancer_mode,
                                    bool user_space_only);
 
 void process_ibs_fetch_samples_tracer(struct bst_node **rootpp,
                                     unsigned long total,
-				    bool balancer_mode,
                                     bool user_space_only);
 void report_tracer_statistics(void);
 void set_base_page_size(unsigned long base_pagesz);
@@ -92,6 +90,10 @@ struct bpf_object;
 int fill_numa_address_range_map(struct bpf_object *obj);
 void process_migrate_processes(int map_fd);
 int numa_range_get(int idx, struct numa_range *range);
+int init_heap(struct bpf_object *obj);
+
+void update_process_run_data(int map_fd);
+void analyze_and_set_autotune_params(unsigned *curr_index);
 
 #define BRIGHT   "\x1b[1m"
 #define MAGENTA  "\x1B[35m"

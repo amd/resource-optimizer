@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022 Advanced Micro Devices, Inc.
+ * Copyright (c) 2023 Advanced Micro Devices, Inc.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -41,12 +41,11 @@ struct {
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, pid_t);
+	__type(key, u64);
 	__type(value, struct process_stats);
 	__uint(max_entries, 16384);
 } process_stats_map SEC(".maps");
 
-#define MAX_PROCESS_STATS_IDX 64
 static struct process_stats process_stats_global[MAX_PROCESS_STATS_IDX];
 static u64 process_stats_free[MAX_PROCESS_STATS_IDX];
 
@@ -94,60 +93,14 @@ static void load_numa_ranges(void)
 	max_num_ranges = i;
 }
 
-static inline struct process_stats * alloc_process_stats(unsigned int *idx)
-{
-	unsigned int i;
-
-#if (__clang_major__ >= 14)
-	for (i = 0; i < MAX_PROCESS_STATS_IDX; i++) {
-		if (ATOMIC64_CMPXCHG(&process_stats_free[i], 0, 1) == 0) {
-			*idx = i;
-			return &process_stats_global[i];
-		}
-	}
-
-	return NULL;
-#else
-	{
-		unsigned int j;
-		static volatile unsigned int next_value_idx;
-		/*
-		 * Workaround in the absence of ATOMIC64_CMPXCHG
-		 * support by LLVM. Remove this code block entirely
-		 * once compare-and-exchange works.
-		 */
-		i = ATOMIC_READ(&next_value_idx);
-		ATOMIC_INC(&next_value_idx);
-		j = i % MAX_PROCESS_STATS_IDX;
-		*idx = j;
-
-		return &process_stats_global[j];
-	}
-#endif
-}
-
-static inline void release_process_stats(int idx)
-{
-	int i;
-
-	for (i = 0; i < MAX_PROCESS_STATS_IDX; i++) {
-		if (i == idx) {
-			ATOMIC64_SET(&process_stats_free[i], 0);
-			break;
-		}
-	}
-}
-
 static void update_process_statistics(u64 tgid, u64 address, bool fetch)
 {
-	struct process_stats *stats, *statsp;
-	int idx, mem_node, cpu_node = 0;
-	pid_t pid = (pid_t)tgid;
+	struct process_stats *statsp;
+	int mem_node, cpu_node = 0;
+	u64 curr_tgid = tgid;
+	//pid_t pid = (pid_t)tgid;
 
-	stats = NULL;
-	idx   = -1;
-
-	cpu_node = cpu_node_get(pid);
+	cpu_node = cpu_node_get();
 	if (!VALID_NODE(cpu_node))
 		return;
 
@@ -155,22 +108,18 @@ static void update_process_statistics(u64 tgid, u64 address, bool fetch)
 	if (mem_node < 0)
 		return;
 
-	statsp = bpf_map_lookup_elem(&process_stats_map, &pid);
+	statsp = bpf_map_lookup_elem(&process_stats_map, &curr_tgid);
 	if (!statsp) {
-		stats = alloc_process_stats(&idx);
-		if (!stats)
+		statsp = alloc_process_stats();
+		if (!statsp)
 			return;
 
-		bpf_map_update_elem(&process_stats_map, &pid, stats,
-				    BPF_NOEXIST);
-		statsp = stats;
+		bpf_map_update_elem(&process_stats_map, &curr_tgid, statsp,
+					BPF_NOEXIST);
 	}
 
 	inc_resource_usage(cpu_node, statsp->cpu);
 	inc_resource_usage(mem_node, statsp->memory);
-
-	if (idx >= 0)
-		release_process_stats(idx);
 
 	if (fetch)
 		inc_ibs_fetch_samples();
@@ -181,18 +130,23 @@ static void update_process_statistics(u64 tgid, u64 address, bool fetch)
 SEC("perf_event")
 int processstats_data_sampler(struct bpf_perf_event_data *ctx)
 {
-	struct value_op op_data;
+	struct value_op *op_data;
 	int err;
 	u64 ip, tgid, key;
 
-	err = ibs_op_event(ctx, &op_data, &tgid, &ip);
+	op_data = alloc_value_op();
+	if (!op_data)
+		return -ENOMEM;
+
+	memset(op_data, 0, sizeof(*op_data));
+	err = ibs_op_event(ctx, op_data, &tgid, &ip);
 	if (err)
 		return err;
 
 #ifdef MEMB_USE_VA
-	key = op_data.op_regs[IBS_DC_LINADDR];
+	key = op_data->op_regs[IBS_DC_LINADDR];
 #else
-	key = op_data.op_regs[IBS_DC_PHYSADDR];
+	key = op_data->op_regs[IBS_DC_PHYSADDR];
 #endif
 
 	update_process_statistics(tgid, key, false);
@@ -204,18 +158,23 @@ int processstats_data_sampler(struct bpf_perf_event_data *ctx)
 SEC("perf_event")
 int processstats_code_sampler(struct bpf_perf_event_data *ctx)
 {
-	struct value_fetch fetch_data;
+	struct value_fetch *fetch_data;
 	int err;
 	u64 ip, tgid, key;
 
-	err = ibs_fetch_event(ctx, &fetch_data, &tgid, &ip);
+	fetch_data = alloc_value_fetch();
+	if (!fetch_data)
+		return -ENOMEM;
+
+	memset(fetch_data, 0, sizeof(*fetch_data));
+	err = ibs_fetch_event(ctx, fetch_data, &tgid, &ip);
 	if (err)
 		return err;
 
 #ifdef MEMB_USE_VA
-	key = fetch_data.fetch_regs[IBS_FETCH_LINADDR];
+	key = fetch_data->fetch_regs[IBS_FETCH_LINADDR];
 #else
-	key = fetch_data.fetch_regs[IBS_FETCH_PHYSADDR];
+	key = fetch_data->fetch_regs[IBS_FETCH_PHYSADDR];
 #endif
 
 	update_process_statistics(tgid, key, true);

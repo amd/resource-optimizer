@@ -2,7 +2,7 @@
  * Process samples from IBS or software sampler and analyze the instruction and
  * data (if available) samples.
  *
- * Copyright 2021 AMD, Inc.
+ * Copyright 2023 AMD, Inc.
  */
 
 #ifndef MEMBALANCER_UTILS_H
@@ -44,12 +44,10 @@ void update_sample_statistics_tracer(unsigned long *samples,
 				     bool fetch);
 void process_ibs_op_samples_tracer(struct bst_node **rootpp,
                                    unsigned long total,
-				   bool balancer_mode,
                                    bool user_space_only);
 
 void process_ibs_fetch_samples_tracer(struct bst_node **rootpp,
                                     unsigned long total,
-				    bool balancer_mode,
                                     bool user_space_only);
 void report_tracer_statistics(void);
 void set_base_page_size(unsigned long base_pagesz);

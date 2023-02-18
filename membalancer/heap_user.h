@@ -1,6 +1,6 @@
 /*
- * getpaddr.c - Get physical address of given pages given their virtual
- * page numbers
+ * heap_user.h - Process samples from IBS or software sample
+ * and analyze the instruction and data (if available) samples.
  *
  * Copyright (c) 2015 The Libbpf Authors. All rights reserved.
  * Copyright (c) 2023 Advanced Micro Devices, Inc.
@@ -28,50 +28,15 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include<sys/param.h>
-#include<stdio.h>
-#include<unistd.h>
-#include<fcntl.h>
-#define PHYSADDR_BYTES 8
+#ifndef HEAP_USER_H
+#define HEAP_USER_H
 
-/* If bit 63 is set, then it is a valid physical address */
-#define IS_PHYSADDR_VALID(addr) (addr & ((unsigned long)1 << 63)) >> 63
+#include<stdbool.h>
+#include<sys/types.h>
 
-unsigned long get_physaddr(pid_t pid, unsigned long vaddr)
-{
-	char path[MAXPATHLEN];
-	int fd;
-	int i;
-	unsigned long offset;
-	unsigned long paddr = 0;
-	char buffer[PHYSADDR_BYTES];
+#include "membalancer.h"
 
-	snprintf(path, MAXPATHLEN, "/proc/%d/pagemap", pid);
+int fill_process_stats_buffers(struct bpf_object *obj);
+int fill_value_latency_buffers(struct bpf_object *obj);
 
-	offset = vaddr / getpagesize() * PHYSADDR_BYTES;
-
-	fd = open(path, O_RDONLY);
-	if (fd < 0)
-		return -1;
-
-	if (pread(fd, buffer, sizeof(buffer), offset) != sizeof(buffer)) {
-		close(fd);
-		return -1;
-	}
-
-	for (i = 0; i < PHYSADDR_BYTES; i++)
-		paddr = (paddr << 8) + (0xff & buffer[PHYSADDR_BYTES - i - 1]);
-
-	close(fd);
-
-	if (IS_PHYSADDR_VALID(paddr)) {
-		unsigned long mask = (unsigned long)-1;
-		mask <<= 1;
-		mask >>= 1;
-		mask >>= 8;
-		return paddr & mask;
-	}
-
-	return -1;
-}
-
+#endif
