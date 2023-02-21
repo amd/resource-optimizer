@@ -23,19 +23,10 @@
 #include <linux/types.h>
 
 #define MAX_IBS_SAMPLES	(64 * 1024)
-#define MAX_STORED_PAGES (128)
-#define PROCESSNAMELEN 32
-#define CMW_PAGE_OFFSET 0xffff880000000000
-#define MAX_NUMA_NODES 64
-#define MAX_CPU_CORES 1024
 
 typedef __u32 u32;
 typedef __u64 u64;
 extern int verbose;
-
-#define CCMD_PAGE_SIZE (4096)
-
-#define MAX_PROCESS_STATS_IDX 1024
 
 enum {
 	IBS_FETCH_EVENT,
@@ -47,21 +38,6 @@ enum {
 	IBS_FETCH_LINADDR,
 	IBS_FETCH_PHYSADDR,
 	IBSFETCH_REG_COUNT,
-};
-
-enum balancer_knobs {
-	CHECK_PPID,
-	MY_OWN_PID,
-	MY_PAGE_SIZE,
-	PER_NUMA_ACCESS_STATS,
-	LATENCY_STATS,
-	LATENCY_STATS_L3MISS,
-	KERN_VERBOSE,
-	USER_SPACE_ONLY,
-	PROCESS_STATS,
-	AUTO_TUNE,
-	LAST_KNOB,
-	TOTAL_KNOBS,
 };
 
 struct perf_ibs_fetch_data {
@@ -96,11 +72,16 @@ enum {
 #define IBS_FETCH_LLC_MISS(reg)  (reg & IBS_FETCH_LLC_MISS_VAL)
 #define IBS_OP_LLC_MISS(reg) (reg & (1UL << 7))
 
-#define IBS_KERN_SAMPLE(ip) (ip > CMW_PAGE_OFFSET)
-
-struct value_data {
-	char buffer[CCMD_PAGE_SIZE];
-};
+/*
+ * The following 3 definitions are independent of AMD hardware. Unable to remove
+ * them at this time because of they are used in generic_kern_amd.c.
+ *
+ * TO DO : Refactor in future to avoid this strong coupling between machine
+ * indepdendent and dependent codes.
+ */
+#define MAX_NUMA_NODES 64
+#define KERN_PAGE_OFFSET 0xffff880000000000
+#define IBS_KERN_SAMPLE(ip) (ip > KERN_PAGE_OFFSET)
 
 struct value_fetch {
 	u64 tgid;
@@ -118,118 +99,5 @@ struct value_op {
 	volatile u32 count;
 	u32 filler;
 };
-
-#define MAX_LATENCY_IDX 512
-struct value_latency {
-	volatile int idx;
-	volatile u32 latency[MAX_LATENCY_IDX];
-};
-
-#define COMM_LEN 16
-struct sched_wakeup {
-        short type;
-        char  flags;
-        char  preempt_count;
-        int   common_pid;
-        char  comm[COMM_LEN];
-        pid_t pid;
-        int   prio;
-#ifndef KERNEL_VERSION
-#define KERNEL_VERSION(a, b, c) (((a) << 16) + ((b) << 8) + ((c) > 255 ? 255 : (c)))
-#endif
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5,19,0)
-        int   success;
-#endif
-        int   target_cpu;
-};
-
-struct sched_exit {
-        short type;
-        char  flags;
-        char  preempt_count;
-        int   common_pid;
-        char  comm[COMM_LEN];
-        pid_t pid;
-        int   prio;
-};
-
-struct process_stats {
-	volatile u32 memory[MAX_NUMA_NODES];
-	volatile u32 cpu[MAX_NUMA_NODES];
-};
-
-struct numa_range {
-	u64 first_pfn;
-	u64 last_pfn;
-	u32 node;
-	u32 tier;
-};
-
-#ifdef __KERNEL__
-/*
-#define ATOMIC_READ(v) __atomic_fetch_add((v), 0, __ATOMIC_SEQ_CST)
-#define ATOMIC_READ(v) __sync_fetch_and_add_N((v), 0)
-#define ATOMIC_READ(v) (*v)
-*/
-#define ATOMIC_INC(v)  __atomic_add_fetch((v), 1, __ATOMIC_SEQ_CST)
-#define ATOMIC64_READ(v) atomic64_read((atomic64_t *)(v))
-#define ATOMIC_READ(v)   atomic_read((atomic_t *)(v))
-#define ATOMIC_ADD(v, val) __atomic_add_fetch((v), val, __ATOMIC_SEQ_CST)
-#define ATOMIC_SET(v, val) atomic_set((atomic_t *)(v), val)
-#define ATOMIC64_SET(v, val) atomic64_set((atomic64_t *)(v), val)
-#define ATOMIC_CMPXCHG(v, cur, new) __sync_val_compare_and_swap((v), cur, new)
-#define ATOMIC64_CMPXCHG(v, cur, new) __sync_val_compare_and_swap((v), cur, new)
-#define VALID_NODE(n) (n >= 0 && n < MAX_NUMA_NODES)
-
-#if (__clang_major__ < 14)
-#define ATOMIC_INC_RETURN(v) atomic_inc_return_dummy(v)
-static inline u32 atomic_inc_return_dummy(volatile u32 *v)
-{
-	u32 old;
-
-	old = ATOMIC_READ(v);
-	__atomic_add_fetch((v), 1, __ATOMIC_SEQ_CST);
-	return old;
-}
-
-#define JUST_ONCE(v, cur, new) just_once(v)
-static inline bool just_once(volatile unsigned long *v)
-{
-	if (ATOMIC_READ(v) != 0)
-		return 1;
-
-	ATOMIC_INC(v);
-	return 0;
-}
-
-#else
-#define JUST_ONCE(v, cur, new) ATOMIC_CMPXCHG(v, cur, new)
-#define ATOMIC_CMPXCHG(v, cur, new) __sync_val_compare_and_swap((v), cur, new)
-#define ATOMIC_INC_RETURN(v) __atomic_add_fetch((v), 1, __ATOMIC_SEQ_CST)
-#endif
-
-#else
-/*
-#define ATOMIC_READ(v) __sync_fetch_and_add((v), 0)
-#define ATOMIC_INC(v) __sync_fetch_and_add((v), 1)
-*/
-#ifndef atomic_t
-typedef struct {
-        volatile int counter;
-} atomic_t;
-
-typedef struct {
-        volatile long counter;
-} atomic64_t;
-
-#define atomic64_read(v) __sync_fetch_and_add(&(v)->counter, 0)
-#define atomic64_add(v, value) __sync_fetch_and_add(&(v)->counter, value)
-#define atomic64_inc(v) atomic64_add(v, 1)
-#define atomic64_sub(v, value) __sync_fetch_and_sub(&(v)->counter, value)
-#define atomic64_dec(v) atomic64_sub(v, 1)
-#define atomic_cmxchg(v, cur, new) __sync_val_compare_and_swap((v), cur, new)
-#endif
-#endif
-
 
 #endif

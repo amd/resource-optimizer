@@ -28,7 +28,7 @@
 #include <bpf/bpf_helpers.h>
 #include <generic_kern_amd.h>
 #include <assert.h>
-#include "membalancer.h"
+#include "membalancer_common.h"
 #include "membalancer_pvt.h"
 
 struct {
@@ -287,6 +287,8 @@ int memstats_data_sampler(struct bpf_perf_event_data *ctx)
 	int err;
 	u64 ip, tgid;
 
+	init_function();
+
 	op_data = alloc_value_op();
 	if (!op_data)
 		return -ENOMEM;
@@ -305,6 +307,8 @@ int memstats_code_sampler(struct bpf_perf_event_data *ctx)
 	struct value_fetch *fetch_data;
 	int err;
 	u64 ip, tgid;
+
+	init_function();
 
 	fetch_data = alloc_value_fetch();
 	if (!fetch_data)

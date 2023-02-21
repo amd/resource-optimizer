@@ -40,7 +40,7 @@
 #include <numaif.h>
 #include <stdbool.h>
 
-#include "membalancer.h"
+#include "membalancer_common.h"
 #include "membalancer_utils.h"
 #include "membalancer_numa.h"
 

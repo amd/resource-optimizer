@@ -58,11 +58,10 @@
 #include <search.h>
 #include <sched.h>
 
-#include "membalancer.h"
+#include "membalancer_common.h"
 #include "membalancer_utils.h"
 #include "membalancer_numa.h"
 #include "membalancer_migrate.h"
-
 
 struct in_mem_proc_runtime_data {
        volatile u64 pid;
@@ -75,7 +74,6 @@ static struct in_mem_proc_runtime_data proc_runtime_data[MAX_PROCESS_STATS_IDX];
 static int proc_data_idx;
 
 #define proc_mem_acc_threshold 70
-
 
 int fill_numa_address_range_map(struct bpf_object *obj)
 {

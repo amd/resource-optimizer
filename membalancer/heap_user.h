@@ -34,7 +34,7 @@
 #include<stdbool.h>
 #include<sys/types.h>
 
-#include "membalancer.h"
+#include "membalancer_common.h"
 
 int fill_process_stats_buffers(struct bpf_object *obj);
 int fill_value_latency_buffers(struct bpf_object *obj);

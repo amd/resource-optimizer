@@ -27,7 +27,7 @@
 #include <bpf/bpf_helpers.h>
 #include <generic_kern_amd.h>
 #include <assert.h>
-#include "membalancer.h"
+#include "membalancer_common.h"
 #include "membalancer_pvt.h"
 
 static struct numa_range numa_ranges[MAX_NUMA_NODES];
@@ -54,6 +54,9 @@ static int memory_node_get(u64 address)
 	int i;
 
 	for (i = 0; i < MAX_NUMA_NODES; i++) {
+		if (numa_ranges[i].first_pfn == (u64)-1)
+			break;
+
 		if ((address >= (numa_ranges[i].first_pfn * PAGE_SIZE)) &&
 		    (address < (numa_ranges[i].last_pfn * PAGE_SIZE))) {
 			return i;
@@ -88,6 +91,11 @@ static void load_numa_ranges(void)
 
 		}
 		bpf_map_delete_elem(&numa_address_range, &key);
+	}
+
+	if (i < MAX_NUMA_NODES - 1) {
+		numa_ranges[i].first_pfn =  (u64)-1;
+		numa_ranges[i].last_pfn  =  (u64)-1;
 	}
 
 	max_num_ranges = i;
@@ -134,6 +142,8 @@ int processstats_data_sampler(struct bpf_perf_event_data *ctx)
 	int err;
 	u64 ip, tgid, key;
 
+	init_function();
+
 	op_data = alloc_value_op();
 	if (!op_data)
 		return -ENOMEM;
@@ -161,6 +171,8 @@ int processstats_code_sampler(struct bpf_perf_event_data *ctx)
 	struct value_fetch *fetch_data;
 	int err;
 	u64 ip, tgid, key;
+
+	init_function();
 
 	fetch_data = alloc_value_fetch();
 	if (!fetch_data)

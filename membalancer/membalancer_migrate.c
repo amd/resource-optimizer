@@ -21,7 +21,7 @@
 #include<sched.h>
 #include <errno.h>
 
-#include "membalancer.h"
+#include "membalancer_common.h"
 #include "membalancer_migrate.h"
 
 cpu_set_t node_cpumask[MAX_NUMA_NODES];
@@ -51,7 +51,7 @@ int move_process(u32 max_count, bool sort)
 		qsort(numa_reference, max_count,
 				sizeof(struct ibs_noderef_sample), data_cmp);
 
-    for (i = max_count - 1 ; i >= 0; i--) {
+	for (i = max_count - 1 ; i >= 0; i--) {
 	    pid = numa_reference[i].pid;
 	    target_node = numa_reference[i].target_node;
 	    err = sched_setaffinity((pid_t)pid, sizeof(cpu_set_t),

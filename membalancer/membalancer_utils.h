@@ -36,7 +36,7 @@
 #include<stdbool.h>
 #include<sys/types.h>
 
-#include "membalancer.h"
+#include "membalancer_common.h"
 
 struct ibs_fetch_sample {
         unsigned long ip;

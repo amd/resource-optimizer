@@ -25,7 +25,7 @@
 #include <bpf/bpf_helpers.h>
 #include <generic_kern_amd.h>
 #include <assert.h>
-#include "membalancer.h"
+#include "membalancer_common.h"
 #include "membalancer_pvt.h"
 
 struct {

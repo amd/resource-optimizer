@@ -58,10 +58,7 @@
 #include <search.h>
 #include <sched.h>
 
-typedef __u32 u32;
-typedef __u64 u64;
-
-#include "membalancer.h"
+#include "membalancer_common.h"
 #include "membalancer_utils.h"
 #include "membalancer_numa.h"
 #include "membalancer_migrate.h"
@@ -942,7 +939,7 @@ static int get_ibs_fetch_samples(int fd,  __u64 *total_freq)
 		paddr *= PAGE_SIZE;
 		/*
 		assert(paddr == (value.fetch_regs[IBS_FETCH_PHYSADDR] &
-				 ~(CCMD_PAGE_SIZE - 1)));
+				 ~(MEMB_PAGE_SIZE - 1)));
 		*/
 #else
 		paddr = value.fetch_regs[IBS_FETCH_PHYSADDR];
@@ -1144,15 +1141,15 @@ static int perform_move_pages(struct bst_node *node, int alignment)
 		j = 0;
 
 		while (j < PAGES_PER_CALL) {
-			list->pagelist[j] = ~(CCMD_PAGE_SIZE -1) &
+			list->pagelist[j] = ~(MEMB_PAGE_SIZE -1) &
 					    node->page[i].addr;
 			list->pid = node->pid;
 			list->nodelist[j] = node->page[i].to_node;
 			list->status[j]   = 0;
 			list->pages++;
 			moved_pages++;
+
 			j++;
-			
 			i++;
 			if (i >= node->pages)
 				break;
@@ -1264,7 +1261,7 @@ static int get_ibs_op_samples(int fd, __u64 *total_freq)
 
 		/*
 		assert(paddr == (value.op_regs[IBS_DC_PHYSADDR] &
-				 ~(CCMD_PAGE_SIZE - 1)));
+				 ~(MEMB_PAGE_SIZE - 1)));
 		*/
 #else
 		paddr = value.op_regs[IBS_DC_PHYSADDR];
@@ -1958,7 +1955,9 @@ static void set_knob(int fd, int knob, int value)
 }
 
 static int load_bpf_programs(struct bpf_program **prog,
-				struct bpf_object *obj, char **prog_names, short prog_count)
+			     struct bpf_object *obj,
+			     char **prog_names,
+			     short prog_count)
 {
 	int  sts = 0;
 	int i;
@@ -1972,12 +1971,14 @@ static int load_bpf_programs(struct bpf_program **prog,
 		 * They will be overridden anyway.
 		 */
 		prog[i] = bpf_object__find_program_by_name(obj,
-								prog_names[i]);
+							   prog_names[i]);
 		if (!prog[i]) {
-			fprintf(stderr, "BPF cannot find prrgram %s to load.\n", prog_names[i]);
+			fprintf(stderr, "BPF cannot find program %s "
+				"to load.\n", prog_names[i]);
 			sts = -EINVAL;
 			break;
 		}
+
 		if (verbose >= 5)
 			printf("loaded program =%s\n", prog_names[i]);
 	}
@@ -1996,7 +1997,7 @@ static int load_perf_fd_bpf_maps(int *map_fd, struct bpf_object *obj,
 		 * fds specific to a profile template(memory or process).
 		 */
 		if (map_names[i] == NULL) {
-			/* This index of map fd is not required for this profile.
+			/* This index of map fd is not required for profiling.
 			 * Just we no need to do anything here.
 			 */
 			if (verbose >= 5)
@@ -2018,7 +2019,8 @@ static int load_perf_fd_bpf_maps(int *map_fd, struct bpf_object *obj,
 	return sts;
 }
 
-static void close_perf_fd_bpf_maps(int *map_fd, enum tuning_profile profile_to_open)
+static void close_perf_fd_bpf_maps(int *map_fd,
+				   enum tuning_profile profile_to_open)
 {
 	char **profile_map_fd_names = NULL;
 
@@ -2034,13 +2036,16 @@ static void close_perf_fd_bpf_maps(int *map_fd, enum tuning_profile profile_to_o
 			close(map_fd[i]);
 			map_fd[i] = -1;
 			if (verbose >= 5)
-				printf("Map fd is closed for map index: %d\n", i);
+				printf("Map fd is closed for map index: %d\n",
+					i);
 		}
 	}
 }
 
-static int populate_perf_fd_bpf_maps_and_bpf_programs(struct bpf_program **prog,
-				int *map_fd, struct bpf_object *obj, enum tuning_profile profile)
+static int init_and_load_bpf_programs(struct bpf_program **prog,
+				      int *map_fd,
+				      struct bpf_object *obj,
+				      enum tuning_profile profile)
 {
 	int sts = 0;
 
@@ -2111,7 +2116,7 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 		goto cleanup;
 	}
 
-	snprintf(filename, sizeof(filename), "%s_kern.o", kernobj);
+	snprintf(filename, sizeof(filename), "%s_kernel.o", kernobj);
 	obj = bpf_object__open_file(filename, NULL);
 	if (libbpf_get_error(obj)) {
 		fprintf(stderr, "ERROR: opening BPF object file failed\n");
@@ -2130,8 +2135,7 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 
 	if (tuning_mode == UNINITIALIZED || /* Profile mode */
 		tuning_mode == MEMORY_MOVE) {
-		err = populate_perf_fd_bpf_maps_and_bpf_programs(prog,
-						map_fd, obj, MEMORY);
+		err = init_and_load_bpf_programs(prog, map_fd, obj, MEMORY);
 		if (err) {
 			/* We really nothing much to clean up here,
 			 * as we need to exit our application!
@@ -2142,8 +2146,7 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 		}
 	} else {
 		assert((tuning_mode == AUTOTUNE) || (tuning_mode == PROCESS_MOVE));
-		err = populate_perf_fd_bpf_maps_and_bpf_programs(prog,
-						map_fd, obj, PROCESS);
+		err = init_and_load_bpf_programs(prog, map_fd, obj, PROCESS);
 		if (err) {
 			/* We really nothing much to clean up here,
 			 * as we need to exit our application!
@@ -2178,7 +2181,7 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 	/*
 	set_knob(map_fd[KNOBS], PER_NUMA_LATENCY_STATS, 1);
 	*/
-	set_knob(map_fd[KNOBS], MY_PAGE_SIZE, CCMD_PAGE_SIZE);
+	set_knob(map_fd[KNOBS], MY_PAGE_SIZE, MEMB_PAGE_SIZE);
 	set_knob(map_fd[KNOBS], MY_OWN_PID, getpid());
 	set_knob(map_fd[KNOBS], KERN_VERBOSE, verbose);
 
@@ -2252,22 +2255,25 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 			 * For bpf programs, nothing to close.
 			 * The new program pointers will override them.
 			 */
-			close_perf_fd_bpf_maps(map_fd, MEMORY); /* Passing profile to open */
-			err = populate_perf_fd_bpf_maps_and_bpf_programs(prog,
-							map_fd, obj, MEMORY);
+
+			/* Passing profile to open */
+			close_perf_fd_bpf_maps(map_fd, MEMORY);
+			err = init_and_load_bpf_programs(prog, map_fd, obj,
+							 MEMORY);
 			if (err) {
 				/* We really nothing much to clean up here,
 				 * as we need to exit our application!
 				 */
 				fprintf(stderr, "ERROR:(%d)Could not load"
-						"all the required programs and maps!!\n", err);
+						"all the required programs "
+						"and maps!!\n", err);
 				goto cleanup;
 			}
 
 			tuning_mode_old = tuning_mode;
-        }
+        	}
 
-		if (ibs_op_sampling_begin(freq, prog[IBS_DATA_SAMPLER], op_links, cpusetp) != 0) {
+		if (ibs_op_sampling_begin(freq, prog[IBS_DATA_SAMPLER],op_links,					  cpusetp) != 0) {
 			if (l3miss)
 				fprintf(stderr,
 					"IBS OP L3 miss fitlering "
@@ -2277,7 +2283,8 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 					"IBS OP sampling not supported\n");
 		}
 
-		if (ibs_fetch_sampling_begin(freq, prog[IBS_CODE_SAMPLER], fetch_links, cpusetp) != 0) {
+		if (ibs_fetch_sampling_begin(freq, prog[IBS_CODE_SAMPLER],
+					     fetch_links, cpusetp) != 0) {
 			if (l3miss)
 				fprintf(stderr,
 					"IBS Fetch L3 miss filtering "
@@ -2287,16 +2294,19 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 				fprintf(stderr,
 					"IBS Fetch sampling not supported\n");
 
-			if (perf_sampling_begin(freq, prog[NON_IBS_CODE_SAMPLER], perf_links, cpusetp) != 0)
+			if (perf_sampling_begin(freq,
+						prog[NON_IBS_CODE_SAMPLER],
+						perf_links, cpusetp) != 0)
 				goto cleanup;
-
 		}
 
 		for (; ;)  {
-			fetch_cnt = peek_ibs_samples(map_fd[FETCH_COUNTER_MAP], fetch_cnt_old,
-							&fetch_cnt_new);
-			op_cnt    = peek_ibs_samples(map_fd[OP_COUNTER_MAP], op_cnt_old,
-						     &op_cnt_new);
+			fetch_cnt = peek_ibs_samples(map_fd[FETCH_COUNTER_MAP],
+						     fetch_cnt_old,
+						     &fetch_cnt_new);
+
+			op_cnt    = peek_ibs_samples(map_fd[OP_COUNTER_MAP],
+						     op_cnt_old, &op_cnt_new);
 
 			if ((fetch_cnt >= MIN_IBS_SAMPLES)) {
 				fetch_cnt_old = fetch_cnt_new;
@@ -2373,7 +2383,8 @@ cleanup:
 }
 
 static int balancer_function(const char *kernobj, int freq, int msecs,
-			     char *include_pids, char *include_ppids, cpu_set_t *cpusetp)
+			     char *include_pids, char *include_ppids,
+			     cpu_set_t *cpusetp)
 {
 	if (trace_dir) {
 		 return balancer_function_int(kernobj, freq, msecs,
@@ -2482,7 +2493,8 @@ int main(int argc, char **argv)
 			break;
 		case 'b':
 			if (tuning_mode != UNINITIALIZED) {
-				printf("Different tuning mode (with -X or -A) is already set!!\n");
+				printf("Different tuning mode (with -X or -A) "
+					"is already set!!\n");
 				usage(argv[0]);
 				return -1;
 			}

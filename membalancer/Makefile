@@ -4,7 +4,7 @@ CLANG ?= clang
 LLC ?= llc
 ARCH := $(subst x86_64,x86,$(shell arch))
 MODULE   := membalancer
-BIN_KERN := ${MODULE}_kern.o
+BIN_KERN := ${MODULE}_kernel.o
 BIN_USER := ${MODULE}_user.o
 BIN_LOAD := bpf_load.o
 BIN_NUMA := ${MODULE}_numa.o
@@ -53,7 +53,7 @@ all:   $(BIN_KERN) \
        ${PROCESS_STATS} ${HEAP} ${BIN_MIGRATE} ${GETPADDR} ${BIN_USER} \
        ${HEAP} ${GETPADDR} ${BIN_USER}
 
-%_kern.o: %_kern.c
+%_kernel.o: %_kernel.c
 	$(CLANG) $(CLANG_FLAGS) -c $< -o - -Wall| \
 		$(LLC) -march=bpf -mcpu=$(CPU) -filetype=obj -o $@
 

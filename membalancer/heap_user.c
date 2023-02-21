@@ -57,9 +57,7 @@
 #include <ctype.h>
 #include <search.h>
 #include <sched.h>
-typedef __u32 u32;
-typedef __u64 u64;
-#include "membalancer.h"
+#include "membalancer_common.h"
 #include "membalancer_utils.h"
 #include "membalancer_numa.h"
 #include "heap_user.h"

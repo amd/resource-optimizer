@@ -32,5 +32,6 @@ struct value_latency * get_value_latency(void);
 struct process_stats * alloc_process_stats(void);
 struct value_op * alloc_value_op(void);
 struct value_fetch * alloc_value_fetch(void);
+static void init_function(void);
 
 #endif

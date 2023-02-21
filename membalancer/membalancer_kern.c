@@ -1,1 +1,0 @@
-../kernel/generic_kern_amd.c
