@@ -56,6 +56,10 @@ struct ibs_op_sample {
         unsigned long op_regs[IBSOP_REG_COUNT];
 };
 
+extern bool histogram_format;
+extern int report_frequency;
+extern bool tier_mode;
+
 extern cpu_set_t node_cpumask[MAX_NUMA_NODES];
 extern struct ibs_fetch_sample fetch_samples[MAX_NUMA_NODES][MAX_IBS_SAMPLES];
 extern unsigned long fetch_samples_max[MAX_NUMA_NODES];
@@ -94,6 +98,12 @@ int init_heap(struct bpf_object *obj);
 
 void update_process_run_data(int map_fd);
 void analyze_and_set_autotune_params(unsigned *curr_index);
+void print_bar(int numa, bool text,
+			bool process_context,
+			bool cpu, double pct);
+void print_text(u64 total_ref, u64 *numa_ref);
+unsigned long seconds_elapsed(struct timeval *start,
+			struct timeval *end);
 
 #define BRIGHT   "\x1b[1m"
 #define MAGENTA  "\x1B[35m"

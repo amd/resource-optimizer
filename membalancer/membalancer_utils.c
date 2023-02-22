@@ -75,3 +75,99 @@ bool cpuvendor_supported(void)
 	}
 	return false;
 }
+
+
+void print_bar(int numa, bool text,
+		bool process_context,
+		bool cpu, double pct)
+{
+	char buffer[15];
+	int i;
+	char *title;
+
+	if (tier_mode)
+		title = "TIER";
+	else
+		title = "NUMA";
+
+	if (text)
+		printf("%s%s", BRIGHT, MAGENTA);
+	else
+		printf("%s%s", BRIGHT, BLUE);
+
+	if (process_context)
+		snprintf(buffer, sizeof(buffer), "%s%d(%s)",
+				title, numa, cpu ? "CPU" : "MEMORY");
+	else
+		snprintf(buffer, sizeof(buffer), "%s%d(%s)",
+				title, numa, text ? "CODE" : "DATA");
+
+	printf("%-10s", buffer);
+	printf("%s", NORM);
+
+	i = pct * 60.0 / 100.0;
+
+	if (pct >= 75.0)
+		printf("%s", BRED);
+	else if (pct >= 50.0)
+		printf("%s", BMAGENTA);
+	else if (pct >= 25.0)
+		printf("%s", BBLUE);
+	else if (pct >= 10.0)
+		printf("%s", BGREEN);
+	else
+		printf("%s", BCYAN);
+
+	do {
+		if (text)
+			printf("%c", 248);
+		else
+			printf("%c", 252);
+	} while (--i > 0);
+
+	printf("%s", NORM);
+	if (text)
+		printf("%s%s", BRIGHT, CYAN);
+	else
+		printf("%s%s", BRIGHT, CYAN);
+	printf("%5.2lf%%", pct);
+	printf("%s", NORM);
+	printf("\n");
+}
+
+void print_text(u64 total_ref, u64 *numa_ref)
+{
+	double pct = 0.0;
+	int i = 0;
+
+	for (i = 0; i < MAX_NUMA_NODES; i++) {
+		if (numa_ref[i] <= 0 || !total_ref)
+			pct = 0.0;
+		else
+			pct = (((double)numa_ref[i]) * 100) / total_ref;
+		if (pct >= 75.0)
+			printf("%s", BRED);
+		else if (pct >= 50.0)
+			printf("%s", BMAGENTA);
+		else if (pct >= 25.0)
+			printf("%s", BBLUE);
+		else if (pct >= 10.0)
+			printf("%s", CYAN);
+		else
+			printf("%s", WHITE);
+
+		printf("%-12.2lf", pct);
+		printf("%s", NORM);
+	}
+}
+
+unsigned long seconds_elapsed(struct timeval *start, struct timeval *end)
+{
+	unsigned long seconds;
+
+	seconds = (end->tv_sec - start->tv_sec) * 1000UL * 1000;
+	seconds += end->tv_usec - start->tv_usec;
+	seconds /= 1000 * 1000;
+
+	return seconds;
+}

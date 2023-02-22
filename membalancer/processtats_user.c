@@ -64,10 +64,10 @@
 #include "membalancer_migrate.h"
 
 struct in_mem_proc_runtime_data {
-       volatile u64 pid;
-       volatile u32 total_access_sample;
-       volatile u32 memory[MAX_NUMA_NODES];
-       volatile u32 cpu[MAX_NUMA_NODES];
+				volatile u64 pid;
+				volatile u32 total_access_sample;
+				volatile u32 memory[MAX_NUMA_NODES];
+				volatile u32 cpu[MAX_NUMA_NODES];
 };
 
 static struct in_mem_proc_runtime_data proc_runtime_data[MAX_PROCESS_STATS_IDX];
@@ -102,6 +102,108 @@ int fill_numa_address_range_map(struct bpf_object *obj)
 	return i;
 }
 
+static void cpu_mem_access_summary_text(u64 total_cpu_ref,
+				u64 *numa_cpu_ref,
+				u64 total_mem_ref,
+				u64 *numa_mem_ref)
+{
+	int i;
+	static unsigned long counter;
+	double pct;
+	char buf[15];
+
+	if (!(counter++ % 20)) {
+		for (i = 0; i < max_nodes; i++) {
+			snprintf(buf, sizeof(buf), "NUMA%d_CPU_MEMORY_ACCESS", i);
+			printf("%-12s", buf);
+		}
+		printf("%s\n", NORM);
+	}
+
+	print_text(total_cpu_ref, numa_cpu_ref);
+	print_text(total_mem_ref, numa_mem_ref);
+
+	printf("\n");
+}
+
+static void print_histogram(u64 total_ref, u64 *numa_ref, bool cpu)
+{
+	int i = 0;
+	double pct = 0.0;
+
+	for (i = 0; i < max_nodes; i++) {
+		if (numa_ref[i] <= 0 || !total_ref)
+			pct = 0.0;
+		else
+			pct = (((double)numa_ref[i]) * 100) / total_ref;
+
+		print_bar(i, false, true, cpu, pct);
+	}
+}
+
+static void cpu_mem_access_summary_histogram(u64 total_cpu_ref,
+				u64* numa_cpu_ref,
+				u64 total_mem_ref,
+				u64* numa_mem_ref)
+{
+	int i;
+	double pct;
+	printf("\f");
+	printf("%s%s%s", BRIGHT, BCYAN, ULINE);
+	for (i = 0; i < 20; i++)
+			printf("%c", 32);
+	printf("%-40s", "NUMA PROCESS CPU AND MEMORY ACCESS PATTERN");
+
+	for (i = 0; i < 20; i++)
+		printf("%c", 32);
+	printf("\n\n");
+	printf("%s", NORM);
+
+	print_histogram(total_cpu_ref, numa_cpu_ref, true);
+	printf("\n");
+	print_histogram(total_mem_ref, numa_mem_ref, false);
+}
+
+static void cpu_mem_access_summary(u64 total_cpu_ref,
+				u64 *numa_cpu_ref,
+				u64 total_mem_ref,
+				u64 *numa_mem_ref)
+{
+	static struct timeval start;
+	struct timeval end;
+	static int print_summary;
+
+	if (atomic_cmxchg(&print_summary, 0, 1))
+		return;
+
+	if (start.tv_sec == 0 && start.tv_sec == 0)
+			gettimeofday(&start, NULL);
+
+	gettimeofday(&end, NULL);
+
+	if (seconds_elapsed(&start, &end) < report_frequency) {
+			assert(atomic_cmxchg(&print_summary, 1, 0) == 1);
+			return;
+	}
+
+	start = end;
+
+	if (!total_cpu_ref && !total_mem_ref) {
+			assert(atomic_cmxchg(&print_summary, 1, 0) == 1);
+			return;
+	}
+
+	if (!histogram_format) {
+			cpu_mem_access_summary_text(total_cpu_ref,
+					numa_cpu_ref, total_mem_ref, numa_mem_ref);
+	} else {
+			cpu_mem_access_summary_histogram(total_cpu_ref,
+				numa_cpu_ref, total_mem_ref, numa_mem_ref);
+	}
+
+	assert(atomic_cmxchg(&print_summary, 1, 0) == 1);
+}
+
 void process_migrate_processes(int map_fd)
 {
 	u64 key = 0, next_key;
@@ -112,7 +214,11 @@ void process_migrate_processes(int map_fd)
 	u64 total_ref = 0;
 	u32 ref_count = 0, max_ref = 0;
 	u32 max_cpu_ref;
-	int	max_cpu_ref_node;
+	int max_cpu_ref_node;
+	u64 total_cpu_ref = 0;
+	u64 total_mem_ref = 0;
+	u64 numa_cpu_ref[MAX_NUMA_NODES] = { 0 };
+	u64 numa_mem_ref[MAX_NUMA_NODES] = { 0 };
 
 	while (bpf_map_get_next_key(map_fd, &key, &next_key) == 0) {
 		bpf_map_lookup_elem(map_fd, &next_key, &stats);
@@ -131,22 +237,26 @@ void process_migrate_processes(int map_fd)
 			if (verbose > 3)
 				printf("CPU%d %-5u ",
 					i, stats.cpu[i]);
+
 			if (stats.cpu[i] > max_cpu_ref) {
 				max_cpu_ref = stats.cpu[i];
 				max_cpu_ref_node = i;
 			}
-		}
+			total_cpu_ref += stats.cpu[i];
+			numa_cpu_ref[i] += stats.cpu[i];
 
-		for (i = 0; i < max_nodes; i++) {
 			ref_count = stats.memory[i];
 			if (verbose > 3)
 				printf("MEM%d %-5u ",
 					i, ref_count);
+
 			if (ref_count > max_ref) {
-			    max_ref = ref_count;
-			    target_node = i;
+				max_ref = ref_count;
+				target_node = i;
 			}
 			total_ref += ref_count;
+			total_mem_ref += stats.memory[i];
+			numa_mem_ref[i] += stats.memory[i];
 		}
 		if (verbose > 3)
 			printf("\n");
@@ -154,10 +264,9 @@ void process_migrate_processes(int map_fd)
 		if ((max_cpu_ref_node != target_node) &&
 			total_ref &&
 			(((max_ref * 100)/ total_ref) > MAX_REMOTE_REF)) {
-
-		    numa_reference[j].target_node = target_node;
-		    numa_reference[j].pid = key;
-		    numa_reference[j].max_ref = max_ref;
+				numa_reference[j].target_node = target_node;
+				numa_reference[j].pid = key;
+				numa_reference[j].max_ref = max_ref;
 
 			j++;
 		}
@@ -165,6 +274,9 @@ void process_migrate_processes(int map_fd)
 
 	if (j)
 		move_process(j, true);
+
+	cpu_mem_access_summary(total_cpu_ref, numa_cpu_ref,
+				total_mem_ref, numa_mem_ref);
 }
 
 void update_process_run_data(int map_fd)
@@ -256,20 +368,20 @@ void analyze_and_set_autotune_params(u32 *curr_index)
 			 * and the load on the node.
 			 */
 		}
-		if (mem_access_node != -1 && mem_access_node != cpu_access_node) {
+		if (mem_access_node == -1 ||  mem_access_node == cpu_access_node)
+			return;
 
-			if (verbose > 3)
-				printf("Setting move process:TID=%d (PID:%d)"
-						"highest cpu node : %d and >%d"
-						"memory access node: %d\n",
-						(pid_t)(proc_data.pid),
-						(pid_t)(proc_data.pid >> 32),
-						cpu_access_node,
-						proc_mem_acc_threshold, mem_access_node);
+		if(verbose > 3)
+			printf("Setting move process:TID=%d (PID:%d)"
+			"highest cpu node : %d and >%d"
+			"memory access node: %d\n",
+			(pid_t)(proc_data.pid),
+			(pid_t)(proc_data.pid >> 32),
+			cpu_access_node,
+			proc_mem_acc_threshold, mem_access_node);
 
-			numa_reference[*curr_index].pid = proc_data.pid;
-			numa_reference[*curr_index].target_node = mem_access_node;
-			(*curr_index)++;
-		}
+		numa_reference[*curr_index].pid = proc_data.pid;
+		numa_reference[*curr_index].target_node = mem_access_node;
+		(*curr_index)++;
 	}
 }

@@ -82,7 +82,7 @@ int move_process(u32 max_count, bool sort)
 		}
 	}
 
-	if (verbose >= 1)
+	if (verbose >= 3)
 		printf("Total requested migration %u"
 			" and failed %u\n",
 			max_count, failed_migrate);

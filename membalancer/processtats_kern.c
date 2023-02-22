@@ -48,17 +48,17 @@ struct {
 
 static struct process_stats process_stats_global[MAX_PROCESS_STATS_IDX];
 static u64 process_stats_free[MAX_PROCESS_STATS_IDX];
-
 static int memory_node_get(u64 address)
 {
 	int i;
+	u64 pfn = address >> PAGE_SHIFT;
 
 	for (i = 0; i < MAX_NUMA_NODES; i++) {
 		if (numa_ranges[i].first_pfn == (u64)-1)
 			break;
 
-		if ((address >= (numa_ranges[i].first_pfn * PAGE_SIZE)) &&
-		    (address < (numa_ranges[i].last_pfn * PAGE_SIZE))) {
+		if ((pfn >= numa_ranges[i].first_pfn) &&
+			(pfn < numa_ranges[i].last_pfn)) {
 			return i;
 		}
 	}

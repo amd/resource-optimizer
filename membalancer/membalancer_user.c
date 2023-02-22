@@ -90,9 +90,9 @@ static bool user_space_only = false;
 int verbose = 2;
 
 enum tuning_mode tuning_mode;
-static bool histogram_format = false;
+bool histogram_format = false;
 static float maximizer_mode = 0.2;
-static int report_frequency = 1;
+int report_frequency = 1;
 static char *trace_dir;
 bool tracer_physical_mode = true;
 static unsigned int min_ibs_samples = MIN_IBS_CLASSIC_SAMPLES;
@@ -789,8 +789,6 @@ static unsigned long milliseconds_elapsed(struct timeval *start,
 	return milliseconds;
 }
 
-
-
 static void * page_move_function(void *arg)
 {
 	int queue = (int)(long)arg;
@@ -1367,56 +1365,6 @@ static void process_ibs_op_samples(struct bst_node **rootpp,
 					    user_space_only);
 }
 
-static void print_bar(int numa, bool text, double pct)
-{
-	char buffer[15];
-	int i;
-	char *title;
-
-	if (tier_mode)
-		title = "TIER";
-	else
-		title = "NUMA";
-
-	if (text)
-		printf("%s%s", BRIGHT, MAGENTA);
-	else
-		printf("%s%s", BRIGHT, BLUE);
-	snprintf(buffer, sizeof(buffer), "%s%d(%s)",
-		title, numa, text ? "CODE" : "DATA");
-	printf("%-10s", buffer);
-	printf("%s", NORM);
-
-	i = pct * 60.0 / 100.0;
-
-	if (pct >= 75.0)
-		printf("%s", BRED);
-	else if (pct >= 50.0)
-		printf("%s", BMAGENTA);
-	else if (pct >= 25.0)
-		printf("%s", BBLUE);
-	else if (pct >= 10.0)
-		printf("%s", BGREEN);
-	else
-		printf("%s", BCYAN);
-
-	do {
-		if (text)
-			printf("%c", 248);
-		else
-			printf("%c", 252);
-	} while (--i > 0);
-
-	printf("%s", NORM);
-	if (text)
-		printf("%s%s", BRIGHT, CYAN);
-	else
-		printf("%s%s", BRIGHT, CYAN);
-	printf("%5.2lf%%", pct);
-	printf("%s", NORM);
-	printf("\n");
-}
-
 static void print_memory_access_summary_histogram(unsigned long code,
 						  unsigned long data,
 						  unsigned long *fetchsamples,
@@ -1447,7 +1395,7 @@ static void print_memory_access_summary_histogram(unsigned long code,
 		else
 			pct = (((double)fetchsamples[i]) * 100) / code;
 
-		print_bar(i, true, pct);
+		print_bar(i, true, false, false, pct);
 	}
 	printf("\n");
 
@@ -1457,7 +1405,7 @@ static void print_memory_access_summary_histogram(unsigned long code,
 		else
 			pct = (((double)opsamples[i]) * 100) / data;
 
-		print_bar(i, false, pct);
+		print_bar(i, false, false, false, pct);
 	}
 }
 
@@ -1534,26 +1482,13 @@ static void print_memory_access_summary_in_text(unsigned long code,
 	printf("\n");
 }
 
-static unsigned long seconds_elapsed(struct timeval *start, struct timeval *end)
-{
-	unsigned long seconds;
-
-	seconds = (end->tv_sec - start->tv_sec) * 1000UL * 1000;
-	seconds += end->tv_usec - start->tv_usec;
-	seconds /= 1000 * 1000;
-
-	return seconds;
-}
-
 static void get_sample_statistics(bool fetch, unsigned long **samples, int *count)
 {
 	if (tier_mode)
 		get_sample_statistics_tier(fetch, samples, count);
 	else
 		get_sample_statistics_numa(fetch, samples, count);
-	
 }
-
 
 static void print_memory_access_summary(void)
 {
@@ -2273,7 +2208,8 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 			tuning_mode_old = tuning_mode;
         	}
 
-		if (ibs_op_sampling_begin(freq, prog[IBS_DATA_SAMPLER],op_links,					  cpusetp) != 0) {
+		if (ibs_op_sampling_begin(freq, prog[IBS_DATA_SAMPLER],
+					op_links, cpusetp) != 0) {
 			if (l3miss)
 				fprintf(stderr,
 					"IBS OP L3 miss fitlering "
@@ -2332,7 +2268,6 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 				fetch_cnt_old = fetch_cnt_new;
 				break;
 			}
-
 
 			msecs_nap = msecs * 1000 / 10;
 			if (msecs_nap < 1000)
