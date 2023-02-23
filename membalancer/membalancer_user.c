@@ -99,7 +99,7 @@ static unsigned int min_ibs_samples = MIN_IBS_CLASSIC_SAMPLES;
 static int migration_timeout_sec = 60;
 static int min_migrated_pages = MIN_MIGRATED_PAGES;
 
-static char cmd_args[]  = "c:f:P:p:r:m:M:v:U:T:t:D:L:B:uhcbHVlXA::";
+static char cmd_args[]  = "c:f:F:P:p:r:m:M:v:U:T:t:D:L:B:uhcbHVlXA::";
 static int ibs_fetch_device = -1;
 static int ibs_op_device    = -1;
 #define FETCH_CONFIG        57
@@ -115,10 +115,10 @@ static bool l3miss = false;
 
 static u32 sampling_interval_cnt = 25;
 static u32 sampling_iter;
-
 bool proc_data_sampling_done = false;
-
 u32 curr_proc_data_map_idx;
+
+static int min_freemem_pct = 10;
 
 static atomic64_t fetch_cnt, op_cnt, pages_migrated;
 
@@ -216,6 +216,8 @@ static void usage(const char *cmd)
 			"        <demote_pct>:<tier_num_for_demotion>:"
 			" <deomotion_cap_in_bytes>\n"
 			"        [-<tier_num>:<...>]\n");
+	printf("       -F minimum percentage of free memory in a node "
+			"to perform migraitons to it\n");
 	printf("       <duration> Interval in milliseconds, "
 	       "default %d\n", MEMB_INTVL);
 
@@ -245,6 +247,11 @@ static void usage(const char *cmd)
 	printf("%s -u -P 99053 -c 1,2,3,10-20,30-40\n",
 		cmd);
 
+}
+
+int freemem_threshold(void)
+{
+	return min_freemem_pct;
 }
 
 static int get_ibs_device_type(const char *dev)
@@ -1197,34 +1204,25 @@ static void bst_process_pages(struct bst_node *root)
 	tdestroy(root, free);
 }
 
-#define PRINT_HEADER(print) { \
-	if ((print))  { \
-		printf("%-10s %-5s %-5s %-10s %-22s %-22s " \
-			"%-10s %-12s %-10s\n", \
-			"PID", "TYPE", "COUNT", "PERCENTAGE", \
-			"VIRTADDR", "PHYSADDR", "NODE_MEM", "NODE_MEM_NEW", \
-			 "NODE_CPU"); \
-		(print) = false; \
-	} \
-}
-
 static void process_ibs_fetch_samples(struct bst_node **rootpp,
 				      unsigned long total)
 {
 	if (trace_dir)
 		process_ibs_fetch_samples_tracer(rootpp, total, user_space_only);
 	else if (tier_mode)
-		process_ibs_fetch_samples_tier(rootpp, total, (tuning_mode & MEMORY_MOVE),
+		process_ibs_fetch_samples_tier(rootpp, total,
+					       (tuning_mode & MEMORY_MOVE),
 					       user_space_only);
 	else
-		process_ibs_fetch_samples_numa(rootpp,  total, (tuning_mode & MEMORY_MOVE),
+		process_ibs_fetch_samples_numa(rootpp,  total,
+					       (tuning_mode & MEMORY_MOVE),
 					       user_space_only);
 }
 
 static int op_cmp(const void *p1, const void *p2)
 {
 	const struct ibs_op_sample *s1 = p1, *s2 = p2;
-	
+
 	return s1->count - s2->count;
 }
 
@@ -1358,10 +1356,12 @@ static void process_ibs_op_samples(struct bst_node **rootpp,
 	if (trace_dir)
 		process_ibs_op_samples_tracer(rootpp, total, user_space_only);
 	else if (tier_mode)
-		process_ibs_op_samples_tier(rootpp, total, (tuning_mode & MEMORY_MOVE),
+		process_ibs_op_samples_tier(rootpp, total,
+					    (tuning_mode & MEMORY_MOVE),
 					    user_space_only);
 	else
-		process_ibs_op_samples_numa(rootpp, total, (tuning_mode & MEMORY_MOVE),
+		process_ibs_op_samples_numa(rootpp, total,
+					    (tuning_mode & MEMORY_MOVE),
 					    user_space_only);
 }
 
@@ -1615,6 +1615,11 @@ static void process_samples(int *map_fd, int msecs, int fetch)
 		atomic64_sub(&ibs_pending_op_samples, op_cnt);
 	}
 
+	if (update_per_node_freemem() != 0) {
+		fprintf(stderr, "Cannot load per-node freemem information\n");
+		return;
+	}
+
 	if (tuning_mode == PROCESS_MOVE) {
 		if ((fetch_cnt >= MIN_IBS_FETCH_SAMPLES) ||
 			(op_cnt >= MIN_IBS_OP_SAMPLES))
@@ -1628,7 +1633,8 @@ static void process_samples(int *map_fd, int msecs, int fetch)
 		 */
 		if (sampling_interval_cnt && sampling_iter % sampling_interval_cnt) {
 			printf("Capturing process run data :"
-				"sampling_iter=%u/%u\n", sampling_iter, sampling_interval_cnt);
+				"sampling_iter=%u/%u\n", sampling_iter,
+				sampling_interval_cnt);
 			update_process_run_data(map_fd[PROC_STAT_MAP]);
 			return;
         } else {
@@ -1645,9 +1651,11 @@ static void process_samples(int *map_fd, int msecs, int fetch)
 			assert(proc_data_sampling_done == true);
 			move_process(curr_proc_data_map_idx, false);
 
-			curr_proc_data_map_idx = 0; /* set to indicate no valid entry */
+			/* set to indicate no valid entry */
+			curr_proc_data_map_idx = 0;
 			return;
 		}
+
 		/* Setting memory tuning for rest of the processes */
 		tuning_mode |= MEMORY_MOVE;
 	}
@@ -1775,14 +1783,13 @@ static int init_ibs_sample_worker(int *map_fd,
 	static_assert(IBS_SAMPLE_WORKERS >= 1 && IBS_SAMPLE_WORKERS <= 2,
 		     "IBS_SAMPLE_WORKERS can either 1 or 2");
 
-
 	for (i = 0; i < IBS_SAMPLE_WORKERS; i++) {
 		pthread_mutex_init(&ibs_worker[i].mtx, NULL);
 		pthread_cond_init(&ibs_worker[i].cv, NULL);
 		ibs_worker[i].map_fd = map_fd;
 		ibs_worker[i].msecs  = msecs;
 		ibs_worker[i].worker = IBS_SAMPLE_WORKERS - i;
-	
+
 		if (pthread_create(&ibs_worker[i].thread, NULL, 
 				    ibs_sample_worker_function,
 				    (void *)&ibs_worker[i]))
@@ -1897,8 +1904,7 @@ static int load_bpf_programs(struct bpf_program **prog,
 	int  sts = 0;
 	int i;
 
-	for (i=0; i< prog_count; i++)
-	{
+	for (i=0; i< prog_count; i++) {
 		if (!prog_names[i]) {
 			continue;
 		}
@@ -1917,6 +1923,7 @@ static int load_bpf_programs(struct bpf_program **prog,
 		if (verbose >= 5)
 			printf("loaded program =%s\n", prog_names[i]);
 	}
+
 	return sts;
 }
 
@@ -1984,13 +1991,14 @@ static int init_and_load_bpf_programs(struct bpf_program **prog,
 {
 	int sts = 0;
 
-	switch (profile)
-	{
+	switch(profile) {
 		case MEMORY:
 			if (verbose >= 5)
-				printf("Loading bpf programs and maps for memory profile\n");
+				printf("Loading bpf programs and maps for "
+					"memory profile\n");
 			sts = load_bpf_programs(prog, obj,
-						memory_profile_program_names, TOTAL_BPF_PROGRAMS);
+						memory_profile_program_names,
+						TOTAL_BPF_PROGRAMS);
 			if (sts)
 				break;
 			sts = load_perf_fd_bpf_maps(map_fd, obj,
@@ -1998,11 +2006,14 @@ static int init_and_load_bpf_programs(struct bpf_program **prog,
 			break;
         case PROCESS:
 			if (verbose >= 5)
-				printf("Loading bpf programs and maps for process profile\n");
+				printf("Loading bpf programs and maps for "
+					"process profile\n");
 			sts = load_bpf_programs(prog, obj,
-						process_profile_program_names, TOTAL_BPF_PROGRAMS);
+						process_profile_program_names,
+						TOTAL_BPF_PROGRAMS);
 			if (sts)
 				break;
+
 			sts = load_perf_fd_bpf_maps(map_fd, obj,
 						process_map_fd_names, TOTAL_MAPS);
 			break;
@@ -2076,7 +2087,7 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 			 * as we need to exit our application!
 			 */
 			fprintf(stderr, "ERROR:(%d)Could not load all"
-						"the required programs and maps!!\n", err);
+				"the required programs and maps!!\n", err);
 			goto cleanup;
 		}
 	} else {
@@ -2087,7 +2098,7 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 			 * as we need to exit our application!
 			 */
 			fprintf(stderr, "ERROR:(%d)Could not load all"
-						"the required programs and maps!!\n", err);
+				"the required programs and maps!!\n", err);
 			goto cleanup;
 		}
 	}
@@ -2333,7 +2344,7 @@ static int balancer_function(const char *kernobj, int freq, int msecs,
 	 * is to run balanacer under a new process and terminate the process
 	 * when the migration logic stops making forward progress.
 	 */
-#if 1
+#ifdef MEMBALANCE_FORK
 	int status;
 	pid_t pid;
 	int pipefd[2];
@@ -2356,7 +2367,8 @@ static int balancer_function(const char *kernobj, int freq, int msecs,
 	if (read(pipefd[0], &curr_tuning_mode, sizeof(enum tuning_mode)) > 0) {
 		if (verbose >= 5)
 			printf("tuning_mode was %d and"
-				"curr tuning mode =%d\n",tuning_mode, curr_tuning_mode);
+				"curr tuning mode =%d\n",tuning_mode,
+				curr_tuning_mode);
 	}
 
 	close(pipefd[0]);
@@ -2371,7 +2383,7 @@ static int balancer_function(const char *kernobj, int freq, int msecs,
 
 	return -EINVAL;
 #else
-	return balancer_function_int(kernobj, freq, msecs
+	return balancer_function_int(kernobj, freq, msecs,
 			include_pids, include_ppids, cpusetp);
 #endif
 }
@@ -2456,6 +2468,15 @@ int main(int argc, char **argv)
 			break;
 		case 'f':
 			freq = atoi(optarg);
+			break;
+		case 'F':
+			min_freemem_pct = atoi(optarg);
+			if (min_freemem_pct < 0 || min_freemem_pct > 100) {
+				printf("Invalid freemem threshold %d\n",
+					min_freemem_pct);
+				usage(argv[0]);
+				return -1;
+			}
 			break;
 		case 'p':
 			include_pids = optarg;

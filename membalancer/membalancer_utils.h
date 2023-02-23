@@ -104,6 +104,7 @@ void print_bar(int numa, bool text,
 void print_text(u64 total_ref, u64 *numa_ref);
 unsigned long seconds_elapsed(struct timeval *start,
 			struct timeval *end);
+int freemem_threshold(void);
 
 #define BRIGHT   "\x1b[1m"
 #define MAGENTA  "\x1B[35m"

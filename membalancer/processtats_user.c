@@ -317,15 +317,15 @@ void update_process_run_data(int map_fd)
 			proc_runtime_data[found_index].pid = key;
 			proc_runtime_data[found_index].cpu[i] += stats.cpu[i];
 			proc_runtime_data[found_index].memory[i] += stats.memory[i];
-			proc_runtime_data[found_index].total_access_sample += stats.memory[i];
-
+			proc_runtime_data[found_index].total_access_sample +=
+							stats.memory[i];
 			if (verbose > 3) {
 				printf("CPU%d %-5u , stat[%d].CPU%d %-5u\n",
-						i, stats.cpu[i], found_index, i,
-						proc_runtime_data[found_index].cpu[i]);
+					i, stats.cpu[i], found_index, i,
+					proc_runtime_data[found_index].cpu[i]);
 				printf("MEM%d %-5u , stat[%d].MEM%d %-5u\n",
-						i, stats.memory[i], found_index, i,
-						proc_runtime_data[found_index].memory[i]);
+					i, stats.memory[i], found_index, i,
+					proc_runtime_data[found_index].memory[i]);
 			}
 		}
 	}
@@ -352,9 +352,8 @@ void analyze_and_set_autotune_params(u32 *curr_index)
 		highest_access_val = 0;
 
 		proc_data = proc_runtime_data[i];
-		access_threshold_val = ( proc_data.total_access_sample *
-								proc_mem_acc_threshold)/100 ;
-
+		access_threshold_val = (proc_data.total_access_sample *
+					proc_mem_acc_threshold)/100 ;
 		for (int j = 0; j < max_nodes; j++) {
 			if ( proc_data.memory[j] >= access_threshold_val) {
 				mem_access_node = j;
@@ -364,21 +363,23 @@ void analyze_and_set_autotune_params(u32 *curr_index)
 				highest_access_val = proc_data.cpu[j];
 				cpu_access_node = j;
 			}
-			/* TODO:Find the best(alternative) node based on NUMA distance table
-			 * and the load on the node.
+			/*
+			 * TODO:Find the best(alternative) node based on the
+			 * distance in NUMA table and the load on the node.
 			 */
 		}
+
 		if (mem_access_node == -1 ||  mem_access_node == cpu_access_node)
 			return;
 
 		if(verbose > 3)
 			printf("Setting move process:TID=%d (PID:%d)"
-			"highest cpu node : %d and >%d"
-			"memory access node: %d\n",
-			(pid_t)(proc_data.pid),
-			(pid_t)(proc_data.pid >> 32),
-			cpu_access_node,
-			proc_mem_acc_threshold, mem_access_node);
+				"highest cpu node : %d and >%d"
+				"memory access node: %d\n",
+				(pid_t)(proc_data.pid),
+				(pid_t)(proc_data.pid >> 32),
+				cpu_access_node,
+				proc_mem_acc_threshold, mem_access_node);
 
 		numa_reference[*curr_index].pid = proc_data.pid;
 		numa_reference[*curr_index].target_node = mem_access_node;

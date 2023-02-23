@@ -17,6 +17,7 @@ HEAP_USER := heap_user.o
 PROCESS_STATS := processtats_user.o
 GETPADDR:= getpaddr.o
 LIBS  := ${LIBBPF}/src/libbpf.so -lz -lelf -lnuma -lpthread
+DEFS = -DMEMBALANCE_FORK
 #DEFS = -DUSE_PAGEMAP
 #DEFS = -DCCMD_SOFTWARE_SAMPLING
 

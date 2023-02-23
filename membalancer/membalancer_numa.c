@@ -39,6 +39,7 @@
 #include <numa.h>
 #include <numaif.h>
 #include <stdbool.h>
+#include <sys/param.h>
 
 #include "membalancer_common.h"
 #include "membalancer_utils.h"
@@ -297,12 +298,15 @@ void process_ibs_fetch_samples_numa(struct bst_node **rootpp,
 				    bool balancer_mode,
 				    bool user_space_only)
 {
-        int i, j, k, node, target_node;
-        unsigned long count;
-        bool hdr = true;
+	int i, j, k, node, target_node;
+	unsigned long count;
+	bool hdr = true;
+	int minfree_pct;
 
-        if (!total)
-                return;
+	if (!total)
+		return;
+
+	minfree_pct = freemem_threshold();
 
         for (node = 0; node < max_nodes; node++) {
                 k = (fetch_samples_cnt[node] * MIN_PCT) / 100;
@@ -345,6 +349,9 @@ void process_ibs_fetch_samples_numa(struct bst_node **rootpp,
                                                 fetch_samples[node][i].count,
                                                 fetch_samples[node][i].counts,
                                                 max_nodes, total);
+				if (node_freemem_get(target_node) < minfree_pct)
+					target_node = node;
+
                         } else {
                                 target_node = node;
                         }
@@ -374,6 +381,9 @@ void process_ibs_op_samples_numa(struct bst_node **rootpp,
         int i, j, k, node, target_node;
         unsigned long count;
         bool hdr = true;
+	int minfree_pct;
+
+	minfree_pct = freemem_threshold();
 
         for (node = 0; node < max_nodes; node++) {
                 k = (op_samples_cnt[node] * MIN_PCT) / 100;
@@ -413,6 +423,9 @@ void process_ibs_op_samples_numa(struct bst_node **rootpp,
                                                 op_samples[node][i].count,
                                                 op_samples[node][i].counts,
                                                 max_nodes, total);
+				if (node_freemem_get(target_node) < minfree_pct)
+					target_node = node;
+
                         } else {
                                 target_node = node;
                         }
@@ -445,3 +458,140 @@ int numa_range_get(int idx, struct numa_range *range)
 	return 0;
 }
 
+static int get_number(const char *buffer,
+		      const char *key,
+		      const char *unit,
+		      int size,
+		      int *offset,
+		      unsigned  long *number)
+{
+	int off = *offset, len;
+	char *next, *where = NULL;
+	unsigned long num = 0;
+
+	len = strlen(key);
+	if (size - off < len)
+		return -EINVAL;
+
+	next = strstr(&buffer[off], key);
+	if (next == NULL)
+		return -EINVAL;
+
+	off += next - &buffer[off];
+	off += len;
+	next = next + len;
+
+	while(*next == ' ' || *next == ':') {
+		if (size - off <= 0)
+			return -EINVAL;
+		next++;
+		off++;
+		if (size - off <= 0)
+			return -EINVAL;
+	}
+
+	while (*next >= '0' && *next <='9') {
+		if (size - off <= 0)
+			return -EINVAL;
+		if (where == NULL)
+			where = next;
+		next++;
+		off++;
+	}
+
+	if (!where)
+		return -EINVAL;
+
+	*next = 0;
+	num = atol(where);
+
+	off++;
+	next++;
+
+	len = strlen(unit);
+	if (size - off < len)
+		return -EINVAL;
+
+	off += len;
+
+	next = strstr(&buffer[off], unit);
+	if (next == NULL)
+		return -EINVAL;
+
+	*number = num * 1024;
+	*offset = off;
+
+	return 0;
+}
+
+static int get_freemem_pct(const char *buffer, int size)
+{
+	char *next;
+	unsigned long total_mem, free_mem, pct;
+	int offset = 0, err;
+
+
+	err = get_number(buffer, "MemTotal", "kB", size, &offset, &total_mem);
+	if (err)
+		return err;
+
+	err = get_number(buffer, "MemFree", "kB", size, &offset, &free_mem);
+	if (err)
+		return err;
+
+	if (total_mem == 0 || total_mem < free_mem)
+		return  -EINVAL;
+
+	pct = (free_mem * 100 / total_mem);
+
+	return (int)pct;
+}
+
+static int node_freemem_load(int node)
+{
+	int fd, bytes;
+	char filename[PATH_MAX];
+	char buffer[PAGE_SIZE];
+
+	snprintf(filename, PATH_MAX, "/sys/devices/system/node/node%d/meminfo",
+		 node);
+
+	fd = open(filename, O_RDONLY);
+	if (fd < 0)
+		return -errno;
+
+	bytes = read(fd, buffer, PAGE_SIZE);
+	close(fd);
+
+	if (bytes < 0)
+		return -EINVAL;
+
+	return get_freemem_pct(buffer, PAGE_SIZE);
+}
+
+int update_per_node_freemem(void)
+{
+	int node, result;
+
+	for (node = 0; node < max_nodes; node++) {
+		result =  node_freemem_load(node);
+		if (result < 0) {
+			numa_table[node].freemem_pct = 0;
+			return -result;
+		}
+
+		assert(result >= 0 && result <= 100);
+
+		numa_table[node].freemem_pct = result;
+	}
+
+	return 0;
+}
+
+int node_freemem_get(int node)
+{
+	if (node >= max_nodes)
+		return -1;
+
+	return numa_table[node].freemem_pct;
+}

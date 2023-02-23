@@ -373,8 +373,11 @@ static unsigned long upgrade_fetch_sample(struct bst_node **rootpp,
 					  bool user_space_only,
 					  int node, int pct)
 {
-        int i, j, k, target_node, upgrade_pct;
-        unsigned long count, pages = 0;
+	int i, j, k, target_node, upgrade_pct;
+	unsigned long count, pages = 0;
+	int minfree_pct;
+
+	minfree_pct = freemem_threshold();
 
 	k = (fetch_samples_cnt[node] * pct) / 100;
 
@@ -398,6 +401,8 @@ static unsigned long upgrade_fetch_sample(struct bst_node **rootpp,
 
 		if (balancer_mode) {
 			target_node = get_target_node_tier(node, true);
+			if (node_freemem_get(target_node) < minfree_pct)
+				target_node = node;
     		} else {
 			target_node = node;
 		}
@@ -425,8 +430,11 @@ static unsigned long upgrade_op_sample(struct bst_node **rootpp,
 					bool user_space_only,
 					int node, int pct)
 {
-        int i, j, k, target_node, upgrade_pct;
-        unsigned long count, pages = 0;
+	int i, j, k, target_node, upgrade_pct;
+	unsigned long count, pages = 0;
+	int minfree_pct;
+
+	minfree_pct = freemem_threshold();
 
 	k = (op_samples_cnt[node] * pct) / 100;
 
@@ -451,6 +459,9 @@ static unsigned long upgrade_op_sample(struct bst_node **rootpp,
 
 		if (balancer_mode) {
 			target_node = get_target_node_tier(node, true);
+			if (node_freemem_get(target_node) < minfree_pct)
+				target_node = node;
+
     		} else {
 			target_node = node;
 		}
@@ -479,6 +490,7 @@ static unsigned long upgrade_sample(struct bst_node **rootpp,
 {
 	int tier;
 	unsigned long pages;
+
 	assert(node >= 0 && node < max_nodes);
 
 	tier = numa_table[node].tierno;
@@ -502,8 +514,11 @@ static void downgrade_fetch_sample(struct bst_node **rootpp, bool balancer_mode,
 				   unsigned long total, bool user_space_only,
 				   int node, int pct, unsigned long *pagesp)
 {
-        int i, j, k, target_node, upgrade_pct;
-        unsigned long count;
+	int i, j, k, target_node, upgrade_pct;
+	unsigned long count;
+	int minfree_pct;
+
+	minfree_pct = freemem_threshold();
 
 	k = (fetch_samples_cnt[node] * pct) / 100;
 
@@ -529,6 +544,8 @@ static void downgrade_fetch_sample(struct bst_node **rootpp, bool balancer_mode,
 
 		if (balancer_mode) {
 			target_node = get_target_node_tier(node, false);
+			if (node_freemem_get(target_node) < minfree_pct)
+				target_node = node;
     		} else {
 			target_node = node;
 		}
@@ -552,9 +569,11 @@ static void downgrade_op_sample(struct bst_node **rootpp, bool balancer_mode,
 				unsigned long total, bool user_space_only,
 				int node, int pct, unsigned long *pagesp)
 {
-        int i, j, k, target_node, upgrade_pct;
-        unsigned long count;
+	int i, j, k, target_node, upgrade_pct;
+	unsigned long count;
+	int minfree_pct;
 
+	minfree_pct = freemem_threshold();
 
 	k = (op_samples_cnt[node] * pct) / 100;
 
@@ -581,6 +600,8 @@ static void downgrade_op_sample(struct bst_node **rootpp, bool balancer_mode,
 
 		if (balancer_mode) {
 			target_node = get_target_node_tier(node, false);
+			if (node_freemem_get(target_node) < minfree_pct)
+				target_node = node;
     		} else {
 			target_node = node;
 		}
@@ -692,4 +713,3 @@ void process_ibs_op_samples_tier(struct bst_node **rootpp,
 		downgrade_sample(rootpp, balancer_mode, total, user_space_only,
 				node, false, &pages);
 }
-

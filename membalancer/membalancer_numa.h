@@ -39,7 +39,7 @@ struct numa_node_mem {
         int           upgrade_pct;
         int           downgrade_pct;
 	int           tierno;
-	int           unused;
+	int           freemem_pct;
 	int           distance[MAX_NUMA_NODES];
 };
 
@@ -86,7 +86,8 @@ void process_ibs_op_samples_tier(struct bst_node **rootpp,
                                  unsigned long total,
                                  bool balancer_mode,
                                  bool user_space_only);
-
+int node_freemem_get(int node);
+int update_per_node_freemem(void);
 extern int max_nodes;
 extern int verbose;
 extern bool tier_mode;
