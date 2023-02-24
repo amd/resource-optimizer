@@ -44,7 +44,6 @@
 #include "membalancer_utils.h"
 #include "membalancer_numa.h"
 
-extern struct numa_node_mem numa_table[MAX_NUMA_NODES];
 struct mem_tier mem_tier[MAX_NUMA_NODES];
 int mem_tiers;
 

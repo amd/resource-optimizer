@@ -209,7 +209,7 @@ void process_migrate_processes(int map_fd)
 	u64 key = 0, next_key;
 	struct process_stats stats;
 	int i;
-	u32 j = 0;
+	u32 process_cnt = 0;
 	int target_node = -1;
 	u64 total_ref = 0;
 	u32 ref_count = 0, max_ref = 0;
@@ -217,8 +217,11 @@ void process_migrate_processes(int map_fd)
 	int max_cpu_ref_node;
 	u64 total_cpu_ref = 0;
 	u64 total_mem_ref = 0;
-	u64 numa_cpu_ref[MAX_NUMA_NODES] = { 0 };
-	u64 numa_mem_ref[MAX_NUMA_NODES] = { 0 };
+	u64 numa_cpu_ref[max_nodes];
+	u64 numa_mem_ref[max_nodes];
+
+	memset(numa_cpu_ref, 0, max_nodes * sizeof(u64));
+	memset(numa_mem_ref, 0, max_nodes * sizeof(u64));
 
 	while (bpf_map_get_next_key(map_fd, &key, &next_key) == 0) {
 		bpf_map_lookup_elem(map_fd, &next_key, &stats);
@@ -262,18 +265,19 @@ void process_migrate_processes(int map_fd)
 			printf("\n");
 
 		if ((max_cpu_ref_node != target_node) &&
-			total_ref &&
-			(((max_ref * 100)/ total_ref) > MAX_REMOTE_REF)) {
-				numa_reference[j].target_node = target_node;
-				numa_reference[j].pid = key;
-				numa_reference[j].max_ref = max_ref;
+		    total_ref &&
+		    (((max_ref * 100)/ total_ref) > MAX_REMOTE_REF)) {
 
-			j++;
+			numa_reference[process_cnt].target_node = target_node;
+			numa_reference[process_cnt].pid = key;
+			numa_reference[process_cnt].max_ref = max_ref;
+
+			process_cnt++;
 		}
 	}
 
-	if (j && do_migration)
-		move_process(j, true);
+	if (process_cnt && do_migration)
+		move_process(process_cnt, true);
 
 	cpu_mem_access_summary(total_cpu_ref, numa_cpu_ref,
 				total_mem_ref, numa_mem_ref);
@@ -319,16 +323,46 @@ void update_process_run_data(int map_fd)
 			proc_runtime_data[found_index].memory[i] += stats.memory[i];
 			proc_runtime_data[found_index].total_access_sample +=
 							stats.memory[i];
-			if (verbose > 3) {
-				printf("CPU%d %-5u , stat[%d].CPU%d %-5u\n",
-					i, stats.cpu[i], found_index, i,
-					proc_runtime_data[found_index].cpu[i]);
-				printf("MEM%d %-5u , stat[%d].MEM%d %-5u\n",
-					i, stats.memory[i], found_index, i,
-					proc_runtime_data[found_index].memory[i]);
-			}
+			if (verbose <= 3)
+				continue;
+
+			printf("CPU%d %-5u , stat[%d].CPU%d %-5u\n", i, stats.cpu[i],
+			       found_index, i, proc_runtime_data[found_index].cpu[i]);
+
+			printf("MEM%d %-5u , stat[%d].MEM%d %-5u\n", i, stats.memory[i],
+			       found_index, i, proc_runtime_data[found_index].memory[i]);
 		}
 	}
+}
+
+static int find_node_for_process_migration(int cpu_access_node,
+				struct in_mem_proc_runtime_data proc_data)
+{
+	u64 access_threshold_val;
+	u64 weight_array[max_nodes];
+	u64 total_weight = 0;
+
+	memset(weight_array, 0, max_nodes * sizeof(u64));
+
+	for (int i = 0; i < max_nodes; i++) {
+		weight_array[i] = (numa_table[cpu_access_node].distance[i] *
+		                   proc_data.memory[i]);
+		total_weight += weight_array[i];
+	}
+
+	access_threshold_val = (total_weight *
+	                        proc_mem_acc_threshold)/100;
+
+	for (int i = 0; i < max_nodes; i++) {
+		/*
+		 * Find a node with concentrated highest total cost.
+		 * If there is, better move the processes to that node.
+		 */
+		if (weight_array[i] >= access_threshold_val)
+			return i;
+	}
+
+	return -1;
 }
 
 void analyze_and_set_autotune_params(u32 *curr_index)
@@ -336,8 +370,7 @@ void analyze_and_set_autotune_params(u32 *curr_index)
 	struct in_mem_proc_runtime_data proc_data;
 	int mem_access_node;
 	int cpu_access_node;
-	u32 highest_access_val;
-	u32 access_threshold_val;
+	u64 highest_access_val;
 
 	/*
 	 * Find if any of the single numa node has memory access.
@@ -352,37 +385,35 @@ void analyze_and_set_autotune_params(u32 *curr_index)
 		highest_access_val = 0;
 
 		proc_data = proc_runtime_data[i];
-		access_threshold_val = (proc_data.total_access_sample *
-					proc_mem_acc_threshold)/100 ;
+		/* First find the highest compute node */
 		for (int j = 0; j < max_nodes; j++) {
-			if ( proc_data.memory[j] >= access_threshold_val) {
-				mem_access_node = j;
-			}
-			/* Find highest execution node */
 			if (proc_data.cpu[j] > highest_access_val) {
 				highest_access_val = proc_data.cpu[j];
 				cpu_access_node = j;
 			}
-			/*
-			 * TODO:Find the best(alternative) node based on the
-			 * distance in NUMA table and the load on the node.
-			 */
 		}
+
+		/*
+		 * Consider the relative cost for each NUMA node to compute weight,
+		 * in respect to highest compute node and find the target node.
+		 */
+		mem_access_node = find_node_for_process_migration(
+		                    cpu_access_node,
+		                    proc_data);
 
 		if (mem_access_node == -1 ||  mem_access_node == cpu_access_node)
 			return;
 
-		if(verbose > 3)
-			printf("Setting move process:TID=%d (PID:%d)"
-				"highest cpu node : %d and >%d"
-				"memory access node: %d\n",
-				(pid_t)(proc_data.pid),
-				(pid_t)(proc_data.pid >> 32),
-				cpu_access_node,
-				proc_mem_acc_threshold, mem_access_node);
-
 		numa_reference[*curr_index].pid = proc_data.pid;
 		numa_reference[*curr_index].target_node = mem_access_node;
 		(*curr_index)++;
+
+		if(verbose <= 3)
+			continue;
+
+		printf("Move process:TID=%d (PID:%d) highest cpu node : %d and >%d "
+		       "memory access node: %d\n",(pid_t)(proc_data.pid),
+		       (pid_t)(proc_data.pid >> 32), cpu_access_node,
+		       proc_mem_acc_threshold, mem_access_node);
 	}
 }

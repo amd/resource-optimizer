@@ -67,8 +67,8 @@
 
 #define MEMB_CLOCK 25 
 #define MEMB_INTVL 100
-#define MIN_IBS_CLASSIC_SAMPLES 1000
-#define MIN_IBS_L3MISS_SAMPLES  1000
+#define MIN_IBS_CLASSIC_SAMPLES 200
+#define MIN_IBS_L3MISS_SAMPLES  200
 #define MIN_IBS_SAMPLES min_ibs_samples
 #define MIN_IBS_FETCH_SAMPLES (MIN_IBS_SAMPLES / 4)
 #define MIN_IBS_OP_SAMPLES    (MIN_IBS_SAMPLES / 2)
@@ -84,6 +84,7 @@ int verbose = 2;
 
 bool do_migration = false;
 enum tuning_mode tuning_mode = MEMORY_MOVE;
+
 bool histogram_format = false;
 static float maximizer_mode = 0.2;
 int report_frequency = 1;
@@ -107,7 +108,7 @@ static unsigned int cpu_nodes;
 static pid_t mypid;
 static bool l3miss = false;
 
-static u32 sampling_interval_cnt = 25;
+static u32 sampling_interval_cnt = 100;
 static u32 sampling_iter;
 bool proc_data_sampling_done = false;
 u32 curr_proc_data_map_idx;
@@ -226,21 +227,28 @@ static void usage(const char *cmd)
 	printf("%s -f 25 -u -P 1234 -v1 -m 0.0001 -M 1 -r 2 100 -S memory -b\n"
 	       "-H -U 1048576 -D 1048576\n", cmd);
 	printf("\n");
-	printf("3. Example for Process migration configuration:\n");
-	printf("%s -f 25 -u -P 1234 -v1 -m 0.0001 -M 1 -r 2 1000 -H -S process -b\n", cmd);
+	printf("3. Example for memory access pattern\n");
+	printf("%s -f 25 -u -P 1234 -v1 -m 0.0001 -M 1 -r 2 100 -S memory\n",
+	       cmd);
 	printf("\n");
-	printf("4. Example for Auto-tuning configuration:\n");
-	printf("%s -f 25 -u -P 1234 -v1 -m 0.0001 -M 1 -r 2 1000 -H -S autotune 50\n"
-			"default sampling count %u\n", cmd, sampling_interval_cnt);
+	printf("4. Example for Process migration configuration:\n");
+	printf("%s -f 25 -u -P 1234 -v1 -m 0.0001 -M 1 -r 2 1000 "
+	       "-H -S process -b\n", cmd);
 	printf("\n");
-	printf("5. Example for memory access tracer or pattern analyzer\n");
+	printf("5. Example for Process cpu and memory access pattern\n");
+	printf("%s -f 25 -u -P 1234 -v1 -m 0.0001 -M 1 -r 2 1000"
+	       "-H -S process\n", cmd);
+	printf("\n");
+	printf("6. Example for Auto-tuning configuration:\n");
+	printf("%s -f 25 -u -P 1234 -v1 -m 0.0001 -M 1 -r 2 1000 -H\n"
+	       "-S autotune 200\n"
+	       "default sampling count %u\n", cmd, sampling_interval_cnt);
+	printf("\n");
+	printf("7. Example for memory access tracer or pattern analyzer\n");
 	printf("%s -f 25 -u -P 99053 -v1 -m 0.0001 -M 1 -r 2 1000 -L /tmp/ \n",
-		cmd);
-	printf("6. Example for list of cpus\n");
-	printf("%s -u -P 99053 -c 1,2,3,10-20,30-40\n",
-		cmd);
-	printf("7. Example for Process cpu and memory access pattern tracer\n");
-	printf("%s -f 25 -u -P 1234 -v1 -m 0.0001 -M 1 -r 2 1000 -H -S process\n", cmd);
+	       cmd);
+	printf("8. Example for list of cpus\n");
+	printf("%s -u -P 99053 -c 1,2,3,10-20,30-40\n",cmd);
 	printf("\n");
 }
 
@@ -251,14 +259,15 @@ struct tune_mode {
 
 #define MAX_MODES 3
 
-static struct tune_mode mode_array[MAX_MODES] = { { AUTOTUNE, "autotune" },
-											{ MEMORY_MOVE, "memory" },
-											{ PROCESS_MOVE, "process"} };
-static int get_tuning_mode(char *mode_str)
+static
+struct tune_mode mode_array[MAX_MODES] = { { AUTOTUNE, "autotune" },
+                                           { MEMORY_MOVE, "memory" },
+                                           { PROCESS_MOVE, "process"} };
+static int get_balancing_mode(char *mode_str)
 {
 	int i = 0;
 	for (i = 0; i < MAX_MODES; i++) {
-		if (strcmp(mode_str, mode_array[i].mode_str) == 0) {
+		if (strcasecmp(mode_str, mode_array[i].mode_str) == 0) {
 			return mode_array[i].mode_enum;
 		}
 	}
@@ -1226,11 +1235,13 @@ static void process_ibs_fetch_samples(struct bst_node **rootpp,
 	if (trace_dir)
 		process_ibs_fetch_samples_tracer(rootpp, total, user_space_only);
 	else if (tier_mode)
-		process_ibs_fetch_samples_tier(rootpp, total, do_migration,
-					       user_space_only);
+		process_ibs_fetch_samples_tier(rootpp, total,
+		                               do_migration,
+		                               user_space_only);
 	else
-		process_ibs_fetch_samples_numa(rootpp,  total, do_migration,
-					       user_space_only);
+		process_ibs_fetch_samples_numa(rootpp,  total,
+		                               do_migration,
+		                               user_space_only);
 }
 
 static int op_cmp(const void *p1, const void *p2)
@@ -1370,11 +1381,13 @@ static void process_ibs_op_samples(struct bst_node **rootpp,
 	if (trace_dir)
 		process_ibs_op_samples_tracer(rootpp, total, user_space_only);
 	else if (tier_mode)
-		process_ibs_op_samples_tier(rootpp, total, do_migration,
-					    user_space_only);
+		process_ibs_op_samples_tier(rootpp, total,
+		                            do_migration,
+		                            user_space_only);
 	else
-		process_ibs_op_samples_numa(rootpp, total, do_migration,
-					    user_space_only);
+		process_ibs_op_samples_numa(rootpp, total,
+		                            do_migration,
+		                            user_space_only);
 }
 
 static void print_memory_access_summary_histogram(unsigned long code,
@@ -1861,7 +1874,8 @@ static int pages_migration_status(int msecs,
 	int max_secs;
 	struct timeval end;
 
-	if (!(tuning_mode & MEMORY_MOVE))
+	if (!(tuning_mode & MEMORY_MOVE) ||
+	    !do_migration)
 		return 0;
 
 	if (migration_timeout_sec <= 0)
@@ -2089,9 +2103,9 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 	}
 
 	/* Resetting BPF map fd list */
-	memset(map_fd, -1, TOTAL_MAPS*sizeof(int));
+	memset(map_fd, -1, TOTAL_MAPS * sizeof(int));
 
-	if(tuning_mode == MEMORY_MOVE) {
+	if (tuning_mode == MEMORY_MOVE) {
 		err = init_and_load_bpf_programs(prog, map_fd, obj, MEMORY);
 		if (err) {
 			/* We really nothing much to clean up here,
@@ -2534,9 +2548,9 @@ int main(int argc, char **argv)
 			trace_dir = optarg;
 			break;
 		case 'S':
-			tuning_mode = get_tuning_mode(argv[optind++]);
+			tuning_mode = get_balancing_mode(argv[optind++]);
 			if (tuning_mode == -1) {
-				printf("Invalid tuning mode\n");
+				printf("Invalid balancing mode\n");
 				usage(argv[0]);
 				return -1;
 			}

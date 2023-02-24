@@ -56,10 +56,10 @@ struct ibs_op_sample {
         unsigned long op_regs[IBSOP_REG_COUNT];
 };
 
-extern bool do_migration;
 extern bool histogram_format;
 extern int report_frequency;
 extern bool tier_mode;
+extern bool do_migration;
 
 extern cpu_set_t node_cpumask[MAX_NUMA_NODES];
 extern struct ibs_fetch_sample fetch_samples[MAX_NUMA_NODES][MAX_IBS_SAMPLES];

@@ -57,6 +57,8 @@ struct mem_tier {
 	struct numa_node_mem *nodep[MAX_NUMA_NODES];
 };
 
+extern struct numa_node_mem numa_table[MAX_NUMA_NODES];
+
 int get_current_node(unsigned long physaddr);
 int fill_numa_table(void);
 int init_tier( char *args);
