@@ -56,6 +56,7 @@ struct ibs_op_sample {
         unsigned long op_regs[IBSOP_REG_COUNT];
 };
 
+extern bool do_migration;
 extern bool histogram_format;
 extern int report_frequency;
 extern bool tier_mode;

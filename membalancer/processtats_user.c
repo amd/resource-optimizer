@@ -272,7 +272,7 @@ void process_migrate_processes(int map_fd)
 		}
 	}
 
-	if (j)
+	if (j && do_migration)
 		move_process(j, true);
 
 	cpu_mem_access_summary(total_cpu_ref, numa_cpu_ref,
