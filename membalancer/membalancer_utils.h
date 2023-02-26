@@ -107,6 +107,9 @@ unsigned long seconds_elapsed(struct timeval *start,
 			struct timeval *end);
 int freemem_threshold(void);
 
+int init_generic_tier(void);
+int nodes_at_hop_or_tier(int node, int hop_or_tier, int *countp, int **listpp);
+
 #define BRIGHT   "\x1b[1m"
 #define MAGENTA  "\x1B[35m"
 #define BLUE     "\x1B[34m"

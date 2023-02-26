@@ -47,10 +47,19 @@
 extern struct numa_node_mem numa_table[MAX_NUMA_NODES];
 struct mem_tier mem_tier[MAX_NUMA_NODES];
 int mem_tiers;
-bool tier_mode = false;
 
-#define PAGE_SIZE  4096 /*getpagesize()*/
-#define PAGE_SHIFT 12
+struct node_list {
+	int node;
+	int distance;
+};
+
+struct generic_tier {
+	int max_nodes;
+	int node[MAX_NUMA_NODES];
+};
+
+struct generic_tier generic_tier[MAX_NUMA_NODES][MAX_NUMA_NODES];
+bool tier_mode = false;
 
 static unsigned long fetch_overall_samples[MAX_NUMA_NODES];
 static unsigned long op_overall_samples[MAX_NUMA_NODES];
@@ -69,7 +78,6 @@ int numa_tier_get(unsigned long physaddr)
 
         return -1;
 }
-
 
 static char * next_tier(char **string)
 {
@@ -292,6 +300,7 @@ static int get_target_node_tier(int node, bool upgrade)
 {
 	int tier, next_tier, target_node, idx;
 	struct numa_node_mem *nodep;
+	int minfree_pct;
 
 	tier = numa_table[node].tierno;
 
@@ -319,17 +328,129 @@ static int get_target_node_tier(int node, bool upgrade)
 			node, tier, next_tier, target_node);
 	*/
 
-	return target_node;
+	minfree_pct = freemem_threshold();
+	if (node_freemem_get(target_node) >= minfree_pct)
+		return target_node;
+
+	return node;
+}
+
+static int cmp_distance(const void *p1, const void *p2)
+{
+	const struct node_list  *n1 = p1, *n2 = p2;
+
+	return n1->distance - n2->distance;
+}
+
+static void arrange_neighbours(int node,
+			       struct node_list *list,
+			       int nodes)
+{
+	int i;
+
+	for (i = 0; i < nodes; i++) {
+		list[i].node = i;
+		list[i].distance = numa_table[node].distance[i];
+	}
+
+	qsort(list, nodes, sizeof(*list), cmp_distance);
+
+}
+
+static void init_generic_tier_elem(int node, int max_nodes)
+{
+	struct node_list node_list[MAX_NUMA_NODES];
+	int i, j, distance, nodes;
+
+	arrange_neighbours(node, node_list, max_nodes);
+
+	distance = node_list[0].distance;
+	j = 0;
+	nodes = 0;
+
+	for (i = 0; i < max_nodes; i++) {
+		if (distance == node_list[i].distance) {
+			generic_tier[node][j].node[nodes++] = node_list[i].node;
+			generic_tier[node][j].max_nodes = nodes;
+		} else {
+			nodes = 0;
+			generic_tier[node][++j].node[nodes++] =
+							node_list[i].node;
+			distance = node_list[i].distance;
+			generic_tier[node][j].max_nodes = nodes;
+		}
+	}
+}
+
+int nodes_at_hop_or_tier(int node, int hop_or_tier, int *countp, int **listpp)
+{
+	int count;
+
+	if (node > max_nodes)
+		return -EINVAL;
+
+	count = generic_tier[node][hop_or_tier].max_nodes;
+	if (count <= 0)
+		return -EINVAL;
+
+	*countp = count;
+	*listpp = generic_tier[node][hop_or_tier].node;
+
+	return 0;
+}
+
+static int process_generic_tier(int max_numa)
+{
+	int i;
+
+	if (!max_numa)
+		return -EINVAL;
+
+	for (i = 0; i < max_numa; i++)
+		init_generic_tier_elem(i, max_numa);
+
+	if (verbose <= 3)
+		return 0;
+
+	for (i = 0; i < max_numa; i++) {
+		int j, count, *nodes, k;
+
+		printf("\n");
+		for (j = 0; j < max_numa; j++) {
+			if (nodes_at_hop_or_tier(i, j, &count, &nodes))
+				break;
+
+			printf("For node %d, ", i);
+
+			if (count > 1)
+				printf("nodes at hop %d nodes: ", j);
+			else
+				printf("node at hop %d node: ", j);
+
+			for (k = 0; k < count; k++)
+				printf("%d, ", nodes[k]);
+
+			printf("total nodes %d\n", count);
+		}
+	}
+
+	return 0;
+}
+
+int init_generic_tier(void)
+{
+	return process_generic_tier(max_nodes);
 }
 
 int init_tier(char *args)
 {
 	int err;
 
-	if (!args)
-		return 0;
+	if (!args || args[0] == 0)
+		err = process_generic_tier(max_nodes);
+	else
+		err = process_numa_tier_args(args, mem_tier, max_nodes);
 
-	err = process_numa_tier_args(args, mem_tier, max_nodes);
 	if (err)
 		return err;
 
@@ -375,9 +496,6 @@ static unsigned long upgrade_fetch_sample(struct bst_node **rootpp,
 {
 	int i, j, k, target_node, upgrade_pct;
 	unsigned long count, pages = 0;
-	int minfree_pct;
-
-	minfree_pct = freemem_threshold();
 
 	k = (fetch_samples_cnt[node] * pct) / 100;
 
@@ -399,14 +517,10 @@ static unsigned long upgrade_fetch_sample(struct bst_node **rootpp,
 			continue;
 		}
 
-		if (balancer_mode) {
+		if (balancer_mode)
 			target_node = get_target_node_tier(node, true);
-			if (node_freemem_get(target_node) < minfree_pct)
-				target_node = node;
-    		} else {
+    		else
 			target_node = node;
-		}
-
 
 		if (node != target_node) {
 			pages++;
@@ -432,9 +546,6 @@ static unsigned long upgrade_op_sample(struct bst_node **rootpp,
 {
 	int i, j, k, target_node, upgrade_pct;
 	unsigned long count, pages = 0;
-	int minfree_pct;
-
-	minfree_pct = freemem_threshold();
 
 	k = (op_samples_cnt[node] * pct) / 100;
 
@@ -457,14 +568,10 @@ static unsigned long upgrade_op_sample(struct bst_node **rootpp,
 			continue;
    		}
 
-		if (balancer_mode) {
+		if (balancer_mode)
 			target_node = get_target_node_tier(node, true);
-			if (node_freemem_get(target_node) < minfree_pct)
-				target_node = node;
-
-    		} else {
+    		else
 			target_node = node;
-		}
 
 		if (node != target_node) {
 			pages++;
@@ -516,9 +623,6 @@ static void downgrade_fetch_sample(struct bst_node **rootpp, bool balancer_mode,
 {
 	int i, j, k, target_node, upgrade_pct;
 	unsigned long count;
-	int minfree_pct;
-
-	minfree_pct = freemem_threshold();
 
 	k = (fetch_samples_cnt[node] * pct) / 100;
 
@@ -542,14 +646,10 @@ static void downgrade_fetch_sample(struct bst_node **rootpp, bool balancer_mode,
 			continue;
 		}
 
-		if (balancer_mode) {
+		if (balancer_mode)
 			target_node = get_target_node_tier(node, false);
-			if (node_freemem_get(target_node) < minfree_pct)
-				target_node = node;
-    		} else {
+    		else
 			target_node = node;
-		}
-
 
 		if (node != target_node) {
 			--*pagesp;
@@ -571,9 +671,6 @@ static void downgrade_op_sample(struct bst_node **rootpp, bool balancer_mode,
 {
 	int i, j, k, target_node, upgrade_pct;
 	unsigned long count;
-	int minfree_pct;
-
-	minfree_pct = freemem_threshold();
 
 	k = (op_samples_cnt[node] * pct) / 100;
 
@@ -598,13 +695,10 @@ static void downgrade_op_sample(struct bst_node **rootpp, bool balancer_mode,
 			continue;
    		}
 
-		if (balancer_mode) {
+		if (balancer_mode)
 			target_node = get_target_node_tier(node, false);
-			if (node_freemem_get(target_node) < minfree_pct)
-				target_node = node;
-    		} else {
+    		else
 			target_node = node;
-		}
 
 		if (node != target_node) {
 			--*pagesp;
@@ -679,7 +773,6 @@ void process_ibs_fetch_samples_tier(struct bst_node **rootpp,
         for (node = 0; node < max_nodes; node++)
 		pages += upgrade_sample(rootpp, balancer_mode, total,
 					user_space_only, node, true);
-
 
 	pages *= upgrade_downgrade_ratio();
 	pages /= 100;

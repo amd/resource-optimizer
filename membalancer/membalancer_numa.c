@@ -48,9 +48,6 @@
 int max_nodes;
 struct numa_node_mem numa_table[MAX_NUMA_NODES];
 
-
-#define PAGE_SIZE  4096 /*getpagesize()*/
-#define PAGE_SHIFT 12
 #define MIN_PCT 1.75
 
 static unsigned long fetch_overall_samples[MAX_NUMA_NODES];
@@ -102,7 +99,6 @@ static int get_next_numa_distance(char **distance)
 
         return  val;
 }
-
 
 static int fill_numa_distances_for_node(int node)
 {
@@ -268,8 +264,13 @@ int get_target_node_numa(int node, unsigned long count, unsigned int *counts,
                 }
         }
 
-        if ((weight_min + (weight_min / 10))<= weight_current)
-                return next_node;
+        if ((weight_min + (weight_min / 10))<= weight_current) {
+		int minfree_pct;
+
+		minfree_pct = freemem_threshold();
+		if (node_freemem_get(next_node) >= minfree_pct) 
+                	return next_node;
+	}
 
         return node;
 }
@@ -301,12 +302,9 @@ void process_ibs_fetch_samples_numa(struct bst_node **rootpp,
 	int i, j, k, node, target_node;
 	unsigned long count;
 	bool hdr = true;
-	int minfree_pct;
 
 	if (!total)
 		return;
-
-	minfree_pct = freemem_threshold();
 
         for (node = 0; node < max_nodes; node++) {
                 k = (fetch_samples_cnt[node] * MIN_PCT) / 100;
@@ -349,8 +347,6 @@ void process_ibs_fetch_samples_numa(struct bst_node **rootpp,
                                                 fetch_samples[node][i].count,
                                                 fetch_samples[node][i].counts,
                                                 max_nodes, total);
-				if (node_freemem_get(target_node) < minfree_pct)
-					target_node = node;
 
                         } else {
                                 target_node = node;
@@ -381,9 +377,6 @@ void process_ibs_op_samples_numa(struct bst_node **rootpp,
         int i, j, k, node, target_node;
         unsigned long count;
         bool hdr = true;
-	int minfree_pct;
-
-	minfree_pct = freemem_threshold();
 
         for (node = 0; node < max_nodes; node++) {
                 k = (op_samples_cnt[node] * MIN_PCT) / 100;
@@ -423,9 +416,6 @@ void process_ibs_op_samples_numa(struct bst_node **rootpp,
                                                 op_samples[node][i].count,
                                                 op_samples[node][i].counts,
                                                 max_nodes, total);
-				if (node_freemem_get(target_node) < minfree_pct)
-					target_node = node;
-
                         } else {
                                 target_node = node;
                         }

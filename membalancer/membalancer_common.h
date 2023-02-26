@@ -130,6 +130,12 @@ typedef struct {
 #ifndef __KERNEL__
 typedef __u32 u32;
 typedef __u64 u64;
+#ifndef PAGE_SIZE
+#define PAGE_SIZE 4096
+#endif
+#ifndef PAGE_SHIFT
+#define PAGE_SHIFT 12
+#endif
 #endif
 
 #endif

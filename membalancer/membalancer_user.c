@@ -65,17 +65,10 @@
 #include "heap_user.h"
 #include "membalancer_user.h"
 
-#ifndef PAGE_SIZE
-#define PAGE_SIZE 4096
-#endif
-#ifndef PAGE_SHIFT
-#define PAGE_SHIFT 12
-#endif
-
 #define MEMB_CLOCK 25 
 #define MEMB_INTVL 100
-#define MIN_IBS_CLASSIC_SAMPLES 200
-#define MIN_IBS_L3MISS_SAMPLES  200
+#define MIN_IBS_CLASSIC_SAMPLES 1000
+#define MIN_IBS_L3MISS_SAMPLES  1000
 #define MIN_IBS_SAMPLES min_ibs_samples
 #define MIN_IBS_FETCH_SAMPLES (MIN_IBS_SAMPLES / 4)
 #define MIN_IBS_OP_SAMPLES    (MIN_IBS_SAMPLES / 2)

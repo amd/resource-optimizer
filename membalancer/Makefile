@@ -78,7 +78,6 @@ processtats_user.o: processtats_user.c
 heap_user.o: heap_user.c
 	$(CLANG) -c $<  ${USR_INCLUDE}
 
-
 %_user.o: %_user.c
 	$(CLANG) \
 	./membalancer_numa.o \
