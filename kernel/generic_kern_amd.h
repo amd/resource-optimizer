@@ -22,8 +22,6 @@
 #define _GENERIC_KERN_AMD
 #include <linux/types.h>
 
-#define MAX_IBS_SAMPLES	(64 * 1024)
-
 typedef __u32 u32;
 typedef __u64 u64;
 extern int verbose;

@@ -183,7 +183,6 @@ static int process_fetch_samples(u64 tgid, struct value_fetch *fetch_data,
 {
 	u64 key;
 	struct value_fetch *valuep;
-	int i;
 
 #ifdef MEMB_USE_VA
 	key = fetch_data->fetch_regs[IBS_FETCH_LINADDR];
@@ -202,7 +201,11 @@ static int process_fetch_samples(u64 tgid, struct value_fetch *fetch_data,
 
 		save_node_usage(tgid >> 32,  valuep->counts);
 
-		inc_ibs_fetch_samples();
+		/* Have dense samples before processing */
+		if (!defer_cnt)
+			inc_ibs_fetch_samples(1);
+		else if ((ATOMIC_READ(&valuep->count) % defer_cnt) == 0)
+			inc_ibs_fetch_samples(defer_cnt);
 
 		return 0;
 	}
@@ -213,9 +216,6 @@ static int process_fetch_samples(u64 tgid, struct value_fetch *fetch_data,
 	fetch_data->tgid = tgid;
 	fetch_data->filler = 0;
 
-	for (i = 0; i < MAX_NUMA_NODES; i++)
-		fetch_data->counts[i] = 0;
-
 	save_node_usage(tgid >> 32, fetch_data->counts);
 
 	/* If its is akernel sample or user sample with process id
@@ -224,7 +224,10 @@ static int process_fetch_samples(u64 tgid, struct value_fetch *fetch_data,
 	if ((IBS_KERN_SAMPLE(ip) || fetch_data->tgid)) {
 		bpf_map_update_elem(&ibs_fetch_map, &key, fetch_data,
 				   BPF_NOEXIST);
-		inc_ibs_fetch_samples();
+
+		/* Have dense samples before processing */
+		if (!defer_cnt)
+			inc_ibs_fetch_samples(1);
 	}
 
 	return 0;
@@ -234,8 +237,7 @@ static int process_op_samples(u64 tgid, struct value_op *op_data,
 			      u64 ip, u64 page_size)
 {
 	u64 key;
-	struct value_fetch *valuep;
-	int i;
+	struct value_op *valuep;
 
 #ifdef MEMB_USE_VA
 	key = op_data->op_regs[IBS_DC_LINADDR];
@@ -251,7 +253,12 @@ static int process_op_samples(u64 tgid, struct value_op *op_data,
 				ATOMIC_READ(&valuep->count));
 		ATOMIC_INC(&valuep->count);
 		save_node_usage(tgid >> 32, valuep->counts);
-		inc_ibs_op_samples();
+
+		/* Have dense samples before processing */
+		if (!defer_cnt)
+			inc_ibs_op_samples(1);
+		else if ((ATOMIC_READ(&valuep->count) % defer_cnt) == 0)
+			inc_ibs_op_samples(defer_cnt);
 
 		return 0;
 	}
@@ -263,9 +270,6 @@ static int process_op_samples(u64 tgid, struct value_op *op_data,
 	op_data->ip = ip;
 	op_data->filler = 0;
 
-	for (i = 0; i < MAX_NUMA_NODES; i++)
-		op_data->counts[i] = 0;
-
 	save_node_usage(tgid >> 32, op_data->counts);
 
 	/* If its is akernel sample or user sample with process id
@@ -274,7 +278,10 @@ static int process_op_samples(u64 tgid, struct value_op *op_data,
 	if (op_data->op_regs[IBS_DC_PHYSADDR] != (u64)-1 &&
             (IBS_KERN_SAMPLE(ip) || op_data->tgid)) {
 		bpf_map_update_elem(&ibs_op_map, &key, op_data, BPF_NOEXIST);
-		inc_ibs_op_samples();
+
+		/* Have dense samples before processing */
+		if (!defer_cnt)
+			inc_ibs_op_samples(1);
 	}
 
 	return 0;

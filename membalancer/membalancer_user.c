@@ -2156,6 +2156,12 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 	set_knob(map_fd[KNOBS], MY_OWN_PID, getpid());
 	set_knob(map_fd[KNOBS], KERN_VERBOSE, verbose);
 
+	if (l3miss)
+		set_knob(map_fd[KNOBS], DEFER_PROCESS,
+			 L3MISS_DEFER_PROCESS_CNT);
+	else
+		set_knob(map_fd[KNOBS], DEFER_PROCESS, DEFER_PROCESS_CNT);
+
 	if (tuning_mode == PROCESS_MOVE ||
 		tuning_mode == AUTOTUNE) {
 		if (fill_numa_address_range_map(obj) <= 0) {

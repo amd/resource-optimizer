@@ -85,6 +85,7 @@ static unsigned int kern_verbose;
 static pid_t my_own_pid;
 static bool user_space_only = false;
 unsigned long my_page_size;
+unsigned int defer_cnt;
 
 static volatile u64 ibs_fetches, ibs_ops;
 static bool processtats;
@@ -171,6 +172,11 @@ static void init_function(void)
 		if (i == USER_SPACE_ONLY)
 			user_space_only = true;
 
+		if (i == DEFER_PROCESS) {
+			if (valuep != NULL && (*valuep > 0))
+				defer_cnt = *valuep;
+		}
+
 	}
 
 	if (check_ppid == 1) {
@@ -180,22 +186,22 @@ static void init_function(void)
 	}
 }
 
-static inline void inc_ibs_fetch_samples(void)
+static inline void inc_ibs_fetch_samples(int val)
 {
         int key = 0;
 	u64 value;
 
-	ATOMIC_INC(&ibs_fetches);
+	ATOMIC64_ADD(&ibs_fetches, val);
 	value = ATOMIC64_READ(&ibs_fetches);
         bpf_map_update_elem(&fetch_counter, &key, &value, BPF_ANY);
 }
 
-static inline void inc_ibs_op_samples(void)
+static inline void inc_ibs_op_samples(int val)
 {
         int key = 0;
 	u64 value;
 
-	ATOMIC_INC(&ibs_ops);
+	ATOMIC64_ADD(&ibs_ops, val);
 	value = ATOMIC64_READ(&ibs_ops);
         bpf_map_update_elem(&op_counter, &key, &value, BPF_ANY);
 }

@@ -27,6 +27,8 @@
 #define MAX_CPU_CORES 1024
 #define MEMB_PAGE_SIZE (4096)
 #define MAX_PROCESS_STATS_IDX 1024
+#define DEFER_PROCESS_CNT 8
+#define L3MISS_DEFER_PROCESS_CNT 2
 
 enum balancer_knobs {
 	CHECK_PPID,
@@ -39,6 +41,7 @@ enum balancer_knobs {
 	USER_SPACE_ONLY,
 	PROCESS_STATS,
 	AUTO_TUNE,
+	DEFER_PROCESS,
 	LAST_KNOB,
 	TOTAL_KNOBS,
 };
@@ -71,6 +74,7 @@ struct numa_range {
 #define ATOMIC64_READ(v) atomic64_read((atomic64_t *)(v))
 #define ATOMIC_READ(v)   atomic_read((atomic_t *)(v))
 #define ATOMIC_ADD(v, val) __atomic_add_fetch((v), val, __ATOMIC_SEQ_CST)
+#define ATOMIC64_ADD(v, val) __atomic_add_fetch((v), val, __ATOMIC_SEQ_CST)
 #define ATOMIC_SET(v, val) atomic_set((atomic_t *)(v), val)
 #define ATOMIC64_SET(v, val) atomic64_set((atomic64_t *)(v), val)
 #define ATOMIC_CMPXCHG(v, cur, new) __sync_val_compare_and_swap((v), cur, new)

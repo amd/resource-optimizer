@@ -130,9 +130,9 @@ static void update_process_statistics(u64 tgid, u64 address, bool fetch)
 	inc_resource_usage(mem_node, statsp->memory);
 
 	if (fetch)
-		inc_ibs_fetch_samples();
+		inc_ibs_fetch_samples(1);
 	else
-		inc_ibs_op_samples();
+		inc_ibs_op_samples(1);
 }
 
 SEC("perf_event")
