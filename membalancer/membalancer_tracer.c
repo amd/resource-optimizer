@@ -47,9 +47,6 @@
 #include "membalancer_utils.h"
 #include "membalancer_numa.h"
 
-#define PAGE_SIZE  4096 /*getpagesize()*/
-#define MIN_PCT 1.75
-
 static unsigned long fetch_overall_samples[MAX_NUMA_NODES];
 static unsigned long op_overall_samples[MAX_NUMA_NODES];
 static char *tracer_dir;

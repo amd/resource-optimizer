@@ -48,8 +48,6 @@
 int max_nodes;
 struct numa_node_mem numa_table[MAX_NUMA_NODES];
 
-#define MIN_PCT 1.75
-
 static unsigned long fetch_overall_samples[MAX_NUMA_NODES];
 static unsigned long op_overall_samples[MAX_NUMA_NODES];
 
@@ -244,11 +242,12 @@ int get_target_node_numa(int node, unsigned long count, unsigned int *counts,
 			 int numa_count, unsigned long total_samples)
 {
         int next_node;
-        int i;
         int weight, weight_current, weight_min;
+	int i, minfree_pct;
 	unsigned long ccount = 0;
 
         next_node = 0;
+	minfree_pct = freemem_threshold();
 
         weight_current = calcuate_weight(node, counts, numa_count);
         weight_min = weight_current;
@@ -259,18 +258,15 @@ int get_target_node_numa(int node, unsigned long count, unsigned int *counts,
 
                 weight = calcuate_weight(i, counts, numa_count);
                 if ((weight + (weight / 10)) < weight_min) {
-                        weight_min = weight;
-                        next_node = i;
-                }
+			if (node_freemem_get(i) >= minfree_pct) {
+				weight_min = weight;
+				next_node = i;
+			}
+		}
         }
 
-        if ((weight_min + (weight_min / 10))<= weight_current) {
-		int minfree_pct;
-
-		minfree_pct = freemem_threshold();
-		if (node_freemem_get(next_node) >= minfree_pct) 
-                	return next_node;
-	}
+        if ((weight_min + (weight_min / 10))<= weight_current)
+		return next_node;
 
         return node;
 }
@@ -326,13 +322,10 @@ void process_ibs_fetch_samples_numa(struct bst_node **rootpp,
                         pct  = (float)fetch_samples[node][i].count * 100;
                         pct /= total;
 
-                        /*
-                        if (pct < min_pct || count < MIN_CNT) {
+                        if ((!l3miss && (pct < MIN_PCT)) || count < MIN_CNT) {
                                 fetch_samples[node][i].count = 0;
                                 continue;
                         }
-                        */
-
 
                         if (user_space_only &&
                                 IBS_KERN_SAMPLE(
@@ -396,12 +389,11 @@ void process_ibs_op_samples_numa(struct bst_node **rootpp,
 
                         pct  = (float)op_samples[node][i].count * 100;
                         pct /= total;
-                        /*
-                        if (pct < min_pct || count < MIN_CNT) {
+
+                        if ((!l3miss && (pct < MIN_PCT)) || count < MIN_CNT) {
                                 op_samples[node][i].count = 0;
                                 continue;
                         }
-                        */
 
                         if (!user_space_only &&
                                 IBS_KERN_SAMPLE(

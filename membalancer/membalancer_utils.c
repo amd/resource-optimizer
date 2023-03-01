@@ -76,7 +76,6 @@ bool cpuvendor_supported(void)
 	return false;
 }
 
-
 void print_bar(int numa, bool text,
 		bool process_context,
 		bool cpu, double pct)
@@ -85,7 +84,7 @@ void print_bar(int numa, bool text,
 	int i;
 	char *title;
 
-	if (tier_mode)
+	if (is_tier_mode() && !is_default_tier_mode())
 		title = "TIER";
 	else
 		title = "NUMA";

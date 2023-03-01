@@ -72,8 +72,6 @@
 #define MIN_IBS_SAMPLES min_ibs_samples
 #define MIN_IBS_FETCH_SAMPLES (MIN_IBS_SAMPLES / 4)
 #define MIN_IBS_OP_SAMPLES    (MIN_IBS_SAMPLES / 2)
-#define MIN_CNT 1
-#define MIN_PCT 1.75
 #define MIN_MIGRATED_PAGES 	1024
 #define MIN_MIGRATED_PAGES_TIER 4096
 
@@ -106,7 +104,7 @@ static int ibs_fetch_config;
 static int ibs_op_config;
 static unsigned int cpu_nodes;
 static pid_t mypid;
-static bool l3miss = false;
+bool l3miss = false;
 
 static u32 sampling_interval_cnt = 100;
 static u32 sampling_iter;
@@ -944,6 +942,8 @@ static int get_ibs_fetch_samples(int fd,  __u64 *total_freq)
 	int i, j, max, node;
 	long total = 0;
 	unsigned long paddr;
+	int dense_samples = 0;
+	bool table_full = false;
 
 	for (i = 0; i < max_nodes; i++) {
 		fetch_samples_max[i] = 0;
@@ -983,12 +983,15 @@ static int get_ibs_fetch_samples(int fd,  __u64 *total_freq)
 			continue;
 		}
 
-		if (i >= MAX_IBS_SAMPLES /*|| value.count < MIN_CNT*/) {
+		if (i >= MAX_IBS_SAMPLES) {
 			bpf_map_delete_elem(fd, &next_key);
 			key = next_key;
+			table_full = true;
 			continue;
 		}
 
+		if (value.count >= MIN_DENSE_SAMPLE_FREQ)
+			dense_samples++;
 
 		fetch_samples[node][i].ip    = next_key;
 		fetch_samples[node][i].count = value.count;
@@ -1016,7 +1019,17 @@ static int get_ibs_fetch_samples(int fd,  __u64 *total_freq)
 		
 		fetch_samples_cnt[node]++;
 		key = next_key;
+	}
+
+	/* Proceed if there are sufficient dense samples */
+	if (!table_full && dense_samples < MIN_DENSE_SAMPLES_CODE)
+		return 0;
+
+	key = 0;
+	while (bpf_map_get_next_key(fd, &key, &next_key) == 0) {
+		bpf_map_lookup_elem(fd, &next_key, &value);
 		bpf_map_delete_elem(fd, &next_key);
+		key = next_key;
 	}
 
 	max = i;
@@ -1233,8 +1246,9 @@ static void process_ibs_fetch_samples(struct bst_node **rootpp,
 				      unsigned long total)
 {
 	if (trace_dir)
-		process_ibs_fetch_samples_tracer(rootpp, total, user_space_only);
-	else if (tier_mode)
+		process_ibs_fetch_samples_tracer(rootpp, total,
+						 user_space_only);
+	else if (is_tier_mode())
 		process_ibs_fetch_samples_tier(rootpp, total,
 		                               do_migration,
 		                               user_space_only);
@@ -1258,6 +1272,8 @@ static int get_ibs_op_samples(int fd, __u64 *total_freq)
 	int i, j, max, node;
 	long total = 0;
 	unsigned long paddr;
+	int dense_samples = 0;
+	bool table_full = false;
 
 	for (i = 0; i < max_nodes; i++)
 		op_samples_max[i] = 0;
@@ -1296,9 +1312,10 @@ static int get_ibs_op_samples(int fd, __u64 *total_freq)
 			continue;
 		}
 
-		if (i >= MAX_IBS_SAMPLES /*|| value.count < MIN_CNT*/) {
+		if (i >= MAX_IBS_SAMPLES) {
 			bpf_map_delete_elem(fd, &next_key);
 			key = next_key;
+			table_full = true;
 			continue;
 		}
 
@@ -1308,6 +1325,9 @@ static int get_ibs_op_samples(int fd, __u64 *total_freq)
 
 		for (j = 0; j < max_nodes; j++)
 			op_samples[node][i].counts[j] = value.counts[j];
+
+		if (value.count >= MIN_DENSE_SAMPLE_FREQ)
+			dense_samples++;
 
 		if (!IBS_KERN_SAMPLE(value.op_regs[IBS_OP_RIP]))
 			snprintf(op_samples[node][i].process,
@@ -1336,8 +1356,19 @@ static int get_ibs_op_samples(int fd, __u64 *total_freq)
 
 		op_samples_cnt[node]++;
 		key = next_key;
-		bpf_map_delete_elem(fd, &next_key);
 	}
+
+	/* Proceed if there are sufficient dense samples */
+	if (!table_full && dense_samples < MIN_DENSE_SAMPLES_DATA)
+		return 0;
+
+	key = 0;
+	while (bpf_map_get_next_key(fd, &key, &next_key) == 0) {
+		bpf_map_lookup_elem(fd, &next_key, &value);
+		bpf_map_delete_elem(fd, &next_key);
+		key = next_key;
+	}
+
 	max = i;
 
 	/* sort */
@@ -1380,7 +1411,7 @@ static void process_ibs_op_samples(struct bst_node **rootpp,
 {
 	if (trace_dir)
 		process_ibs_op_samples_tracer(rootpp, total, user_space_only);
-	else if (tier_mode)
+	else if (is_tier_mode())
 		process_ibs_op_samples_tier(rootpp, total,
 		                            do_migration,
 		                            user_space_only);
@@ -1403,7 +1434,8 @@ static void print_memory_access_summary_histogram(unsigned long code,
 	printf("%s%s%s", BRIGHT, BCYAN, ULINE);
 	for (i = 0; i < 20; i++)
 		printf("%c", 32);
-	if (tier_mode)
+
+	if (is_tier_mode() && !is_default_tier_mode())
 		printf("%-40s", "MULTI-TIER MEMORY ACCESS PATTERNS "
 			"for CODE and DATA");
 	else
@@ -1446,7 +1478,7 @@ static void print_memory_access_summary_in_text(unsigned long code,
 	char buf[15];
 	char *title;
 
-	if (tier_mode)
+	if (is_tier_mode() && !is_default_tier_mode())
 		title = "TIER";
 	else
 		title = "NUMA";
@@ -1507,9 +1539,10 @@ static void print_memory_access_summary_in_text(unsigned long code,
 	printf("\n");
 }
 
-static void get_sample_statistics(bool fetch, unsigned long **samples, int *count)
+static void get_sample_statistics(bool fetch, unsigned long **samples,
+				  int *count)
 {
-	if (tier_mode)
+	if (is_tier_mode() && !is_default_tier_mode())
 		get_sample_statistics_tier(fetch, samples, count);
 	else
 		get_sample_statistics_numa(fetch, samples, count);
@@ -1617,7 +1650,7 @@ void update_sample_statistics(unsigned long *samples, bool fetch)
 {
 	if (trace_dir)
 		update_sample_statistics_tracer(samples, fetch);
-	else if (tier_mode)
+	else if (is_tier_mode() && !is_default_tier_mode())
 		update_sample_statistics_tier(samples, fetch);
 	else
 		update_sample_statistics_numa(samples, fetch);
@@ -1848,7 +1881,8 @@ static void ibs_process_samples(struct ibs_sample_worker *worker,
 
 static void print_migration_status(void)
 {
-	printf("MODE : %-13s Fetch_Samples :%-10ld OP_Samples :%-10ld Migrated_Pages :%-10ld\n",
+	printf("MODE : %-13s Fetch_Samples :%-10ld "
+		"OP_Samples :%-10ld Migrated_Pages :%-10ld\n",
 		(l3miss) ? "IBS_L3MISS":"IBS_CLASSIC",
 		atomic64_read(&fetch_cnt),
 		atomic64_read(&op_cnt),
@@ -2141,7 +2175,7 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 	if (include_ppids)
 		set_knob(map_fd[KNOBS], CHECK_PPID, 1);
 
-	if (tier_mode ==  false)
+	if ((is_tier_mode() ==  false) || is_default_tier_mode())
 		set_knob(map_fd[KNOBS], PER_NUMA_ACCESS_STATS, 1);
 
 	if (user_space_only)
@@ -2215,7 +2249,6 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 
 	signal(SIGINT, interrupt_signal);
 	gettimeofday(&start, NULL);
-
 
 	while (!err) {
 
@@ -2355,7 +2388,6 @@ cleanup:
 	free(perf_links);
 	bpf_object__close(obj);
 
-
 	return err;
 }
 
@@ -2464,7 +2496,7 @@ int main(int argc, char **argv)
 		case 'T':
 			min_migrated_pages = MIN_MIGRATED_PAGES_TIER;
 			tier_args = optarg;
-			tier_mode = true;
+			set_tier_mode();
 			break;
 		case 'l':
 			l3miss = true;
@@ -2591,7 +2623,7 @@ int main(int argc, char **argv)
 	ibs_fetchop_config_set();
 
 	fill_numa_table();
-	if (tier_mode) {
+	if (is_tier_mode()) {
 		err  = init_tier(tier_args);
 		if (err)
 			return err;

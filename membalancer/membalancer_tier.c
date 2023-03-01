@@ -44,8 +44,11 @@
 #include "membalancer_utils.h"
 #include "membalancer_numa.h"
 
+extern struct numa_node_mem numa_table[MAX_NUMA_NODES];
 struct mem_tier mem_tier[MAX_NUMA_NODES];
 int mem_tiers;
+
+#define GENERIC_TIER_MIGRATION_PCT 1
 
 struct node_list {
 	int node;
@@ -58,10 +61,27 @@ struct generic_tier {
 };
 
 struct generic_tier generic_tier[MAX_NUMA_NODES][MAX_NUMA_NODES];
-bool tier_mode = false;
+static bool tier_mode = false;
+static bool default_tier = false;
 
 static unsigned long fetch_overall_samples[MAX_NUMA_NODES];
 static unsigned long op_overall_samples[MAX_NUMA_NODES];
+
+
+bool is_tier_mode(void)
+{
+	return tier_mode;
+}
+
+void set_tier_mode(void)
+{
+	tier_mode = true;
+}
+
+bool is_default_tier_mode(void)
+{
+	return default_tier;
+}
 
 int numa_tier_get(unsigned long physaddr)
 {
@@ -284,18 +304,154 @@ static int process_numa_tier_args(char *numa_string,
 	return 0;
 }
 
-static int calcuate_weight(int node, unsigned int *counts, int numa_count)
+static int hops_between_nodes(int node1, int node2)
 {
-        int weight, i;
+	int i, j, count, *nodes, k;
 
-        weight = 0;
-        for (i = 0; i < numa_count; i++)
-                weight += numa_table[node].distance[i] * counts[i];
+	for (i = 0; i < max_nodes; i++) {
 
-        return weight;
+		if (nodes_at_hop_or_tier(node1, i, &count, &nodes))
+			continue;
+
+		if (count < 1)
+			continue;
+
+		for (j = 0; j < count; j++) {
+			if (nodes[j] == node2)
+				return i;
+		}
+	}
+
+	return -1;
 }
 
-static int get_target_node_tier(int node, bool upgrade)
+static int get_target_node_generic_tier_upgrade(
+					int node,
+					unsigned int *ref_counts,
+					int nodes)
+{
+	int i, j, count, *list, minfree_pct, target_node;
+	int total, hops, next_node;
+	bool dominant_sample;
+
+	total = 0;
+	for (i = 0; i < nodes; i++)
+		total += ref_counts[i];
+
+	if (!total)
+		return node;
+
+	j = 0;
+	count = ref_counts[0];
+	for (i = 1; i < nodes; i++) {
+		if (count > ref_counts[i]) {
+			j = i;
+			count =  ref_counts[i];
+		}
+	}
+
+	if ((count * 100 / total) > 50)
+		dominant_sample = true;
+	else
+		dominant_sample = false;
+
+	target_node = j;
+	hops = hops_between_nodes(target_node, node);
+	if (hops <= 0)
+		return node;
+
+	/* Upgrade twice for dominant case, or else move to the above tier */
+	if ((total > 2 * nodes) && dominant_sample && (hops >= 2))
+		hops -= 2;
+	else
+		hops -= 1;
+
+	minfree_pct = freemem_threshold();
+
+	for (i = hops; i >= 0; i--) {
+		if (nodes_at_hop_or_tier(target_node, i, &count, &list))
+			continue;
+
+		if (count == 0)
+			continue;
+
+		for (j = 0; j < count; j++) {
+			next_node = list[j];
+
+			if (node_freemem_get(next_node) >= minfree_pct)
+				return next_node;
+		}
+	}
+
+	return node;
+}
+
+static int get_target_node_generic_tier_downgrade(
+						int node,
+						unsigned int *refs,
+						int nodes)
+{
+	int i, j, count, *list, minfree_pct, target_node, next_node;
+
+	j = 0;
+	count = refs[0];
+	for (i = 1; i < nodes; i++) {
+		if (!count && (refs[i] > 0)) {
+			count = refs[i];
+			j = i;
+			continue;
+		}
+
+		if ((refs[i] > 0) && (refs[i] < count)) {
+			count = refs[i];
+			j = i;
+			continue;
+		}
+	}
+
+	if (!count)
+		return node;
+
+	target_node = j;
+
+	minfree_pct = freemem_threshold();
+
+	/*
+	 * For downgrade try nodes with hop 1 or more from the target node.
+	 */
+	nodes = (nodes > 2) ? nodes : 2;
+	for (i = 1; i < nodes; i++) {
+		if (nodes_at_hop_or_tier(target_node, i, &count, &list))
+			continue;
+
+		if (count == 0)
+			continue;
+
+		for (j = 0; j < count; j++) {
+			next_node = list[j];
+
+			if (node_freemem_get(next_node) >= minfree_pct)
+				return next_node;
+		}
+	}
+
+	return node;
+}
+
+static int get_target_node_generic_tier(int node,
+					bool upgrade,
+					unsigned int *ref_counts,
+					int nodes)
+{
+
+	if (upgrade) 
+		return get_target_node_generic_tier_upgrade(node, ref_counts,
+							    nodes);
+	return get_target_node_generic_tier_downgrade(node, ref_counts,
+						      nodes);
+}
+
+static int get_target_node_tier_int(int node, bool upgrade)
 {
 	int tier, next_tier, target_node, idx;
 	struct numa_node_mem *nodep;
@@ -332,6 +488,18 @@ static int get_target_node_tier(int node, bool upgrade)
 		return target_node;
 
 	return node;
+}
+
+static int get_target_node_tier(int node,
+				bool upgrade,
+				unsigned int *ref_counts,
+				int nodes)
+{
+	if (default_tier)
+		return get_target_node_generic_tier(node, upgrade, ref_counts,
+						    nodes);
+
+	return get_target_node_tier_int(node, upgrade);
 }
 
 static int cmp_distance(const void *p1, const void *p2)
@@ -445,10 +613,15 @@ int init_tier(char *args)
 {
 	int err;
 
-	if (!args || args[0] == 0)
+	if (!args || args[0] == 0) {
 		err = process_generic_tier(max_nodes);
-	else
+		if (!err) {
+			default_tier = true;
+			mem_tiers = max_nodes;
+		}
+	} else {
 		err = process_numa_tier_args(args, mem_tier, max_nodes);
+	}
 
 	if (err)
 		return err;
@@ -493,12 +666,14 @@ static unsigned long upgrade_fetch_sample(struct bst_node **rootpp,
 					  bool user_space_only,
 					  int node, int pct)
 {
-	int i, j, k, target_node, upgrade_pct;
+	int i, k, target_node, upgrade_pct;
 	unsigned long count, pages = 0;
 
 	k = (fetch_samples_cnt[node] * pct) / 100;
 
 	for (i = fetch_samples_cnt[node] - 1; i > -1; i--) {
+		float pct;
+
 		if (!fetch_samples[node][i].count)
 			continue;
 		if (--k < 0) {
@@ -506,9 +681,14 @@ static unsigned long upgrade_fetch_sample(struct bst_node **rootpp,
 			break;
 		}
 
-    		count = 0;
-                for (j = 0; j < max_nodes; j++)
-			count += fetch_samples[node][i].counts[j];
+		count = fetch_samples[node][i].count;
+		pct  = (float)fetch_samples[node][i].count * 100;
+		pct /= total;
+
+		if ((!l3miss && (pct < MIN_PCT)) || count < MIN_CNT) {
+			fetch_samples[node][i].count = 0;
+			continue;
+		}
 
 		if (!user_space_only && IBS_KERN_SAMPLE(
 						fetch_samples[node][i].ip)) {
@@ -517,7 +697,9 @@ static unsigned long upgrade_fetch_sample(struct bst_node **rootpp,
 		}
 
 		if (balancer_mode)
-			target_node = get_target_node_tier(node, true);
+			target_node = get_target_node_tier(node, true,
+						fetch_samples[node][i].counts,
+						max_nodes);
     		else
 			target_node = node;
 
@@ -543,12 +725,14 @@ static unsigned long upgrade_op_sample(struct bst_node **rootpp,
 					bool user_space_only,
 					int node, int pct)
 {
-	int i, j, k, target_node, upgrade_pct;
+	int i, k, target_node, upgrade_pct;
 	unsigned long count, pages = 0;
 
 	k = (op_samples_cnt[node] * pct) / 100;
 
 	for (i = op_samples_cnt[node] - 1; i > -1; i--) {
+		float pct;
+
 		if (!op_samples[node][i].count)
 			continue;
 
@@ -557,9 +741,14 @@ static unsigned long upgrade_op_sample(struct bst_node **rootpp,
 			continue;
 		}
 
-    		count = 0;
-                for (j = 0; j < max_nodes; j++)
-			count += op_samples[node][i].counts[j];
+		count = op_samples[node][i].count;
+		pct  = (float)op_samples[node][i].count * 100;
+		pct /= total;
+
+		if ((!l3miss && (pct < MIN_PCT)) || count < MIN_CNT) {
+			op_samples[node][i].count = 0;
+			continue;
+		}
 
 		if (!user_space_only && IBS_KERN_SAMPLE(
 			op_samples[node][i].op_regs[IBS_OP_RIP])) {
@@ -568,7 +757,9 @@ static unsigned long upgrade_op_sample(struct bst_node **rootpp,
    		}
 
 		if (balancer_mode)
-			target_node = get_target_node_tier(node, true);
+			target_node = get_target_node_tier(node, true,
+						op_samples[node][i].counts,
+						max_nodes);
     		else
 			target_node = node;
 
@@ -594,24 +785,29 @@ static unsigned long upgrade_sample(struct bst_node **rootpp,
 				    bool user_space_only, int node,
 				    bool fetch)
 {
-	int tier;
+	int tier, upgrade_pct;
 	unsigned long pages;
 
 	assert(node >= 0 && node < max_nodes);
 
 	tier = numa_table[node].tierno;
 
-	if (mem_tier[tier].upgrade_pct  == 0)
+	if (default_tier)
+		upgrade_pct = GENERIC_TIER_MIGRATION_PCT;
+	else
+		upgrade_pct = mem_tier[tier].upgrade_pct;
+
+	if (upgrade_pct == 0)
 		return 0;
 
 	if (fetch)
 		pages = upgrade_fetch_sample(rootpp, balancer_mode, total,
 					     user_space_only, node,
-					     mem_tier[tier].upgrade_pct);
+					     upgrade_pct);
 	else
 		pages = upgrade_op_sample(rootpp, balancer_mode, total,
 					  user_space_only, node,
-					  mem_tier[tier].upgrade_pct);
+					  upgrade_pct);
 
 	return pages;
 }
@@ -620,7 +816,7 @@ static void downgrade_fetch_sample(struct bst_node **rootpp, bool balancer_mode,
 				   unsigned long total, bool user_space_only,
 				   int node, int pct, unsigned long *pagesp)
 {
-	int i, j, k, target_node, upgrade_pct;
+	int i, k, target_node, upgrade_pct;
 	unsigned long count;
 
 	k = (fetch_samples_cnt[node] * pct) / 100;
@@ -635,10 +831,6 @@ static void downgrade_fetch_sample(struct bst_node **rootpp, bool balancer_mode,
 			break;
 		}
 
-    		count = 0;
-                for (j = 0; j < max_nodes; j++)
-			count += fetch_samples[node][i].counts[j];
-
 		if (!user_space_only && IBS_KERN_SAMPLE(
 						fetch_samples[node][i].ip)) {
 			fetch_samples[node][i].count = 0;
@@ -646,7 +838,9 @@ static void downgrade_fetch_sample(struct bst_node **rootpp, bool balancer_mode,
 		}
 
 		if (balancer_mode)
-			target_node = get_target_node_tier(node, false);
+			target_node = get_target_node_tier(node, false,
+						fetch_samples[node][i].counts,
+						max_nodes);
     		else
 			target_node = node;
 
@@ -668,7 +862,7 @@ static void downgrade_op_sample(struct bst_node **rootpp, bool balancer_mode,
 				unsigned long total, bool user_space_only,
 				int node, int pct, unsigned long *pagesp)
 {
-	int i, j, k, target_node, upgrade_pct;
+	int i, k, target_node, upgrade_pct;
 	unsigned long count;
 
 	k = (op_samples_cnt[node] * pct) / 100;
@@ -684,10 +878,6 @@ static void downgrade_op_sample(struct bst_node **rootpp, bool balancer_mode,
 			continue;
 		}
 
-    		count = 0;
-                for (j = 0; j < max_nodes; j++)
-			count += op_samples[node][i].counts[j];
-
 		if (!user_space_only && IBS_KERN_SAMPLE(
 			op_samples[node][i].op_regs[IBS_OP_RIP])) {
 			op_samples[node][i].count = 0;
@@ -695,7 +885,9 @@ static void downgrade_op_sample(struct bst_node **rootpp, bool balancer_mode,
    		}
 
 		if (balancer_mode)
-			target_node = get_target_node_tier(node, false);
+			target_node = get_target_node_tier(node, false,
+						op_samples[node][i].counts,
+						max_nodes);
     		else
 			target_node = node;
 
@@ -717,23 +909,29 @@ static void downgrade_sample(struct bst_node **rootpp, bool balancer_mode,
                            unsigned long total, bool user_space_only, int node,
 			   bool fetch, unsigned long *pagesp)
 {
-	int tier;
+	int tier, downgrade_pct;
 	assert(node >= 0 && node < max_nodes);
 
 	tier = numa_table[node].tierno;
 
-	if (mem_tier[tier].downgrade_pct  == 0)
+	if (default_tier)
+		downgrade_pct = GENERIC_TIER_MIGRATION_PCT;
+	else
+		downgrade_pct = mem_tier[tier].downgrade_pct;
+	
+
+	if (downgrade_pct == 0)
 		return;
 
 	if (fetch)
 		downgrade_fetch_sample(rootpp, balancer_mode, total,
 				       user_space_only, node,
-				       mem_tier[tier].downgrade_pct,
+				       downgrade_pct,
 				       pagesp);
 	else
 		downgrade_op_sample(rootpp, balancer_mode, total,
 				    user_space_only, node,
-				    mem_tier[tier].downgrade_pct,
+				    downgrade_pct,
 				    pagesp);
 }
 
@@ -745,15 +943,20 @@ static int upgrade_downgrade_ratio(void)
 	sum_up_pct  = 0;
 
 	for (i = 0; i < mem_tiers; i++) {
-		sum_up_pct   += mem_tier[i].upgrade_pct;
-		sum_down_pct += mem_tier[i].downgrade_pct;
+		if (default_tier) {
+			sum_up_pct   += GENERIC_TIER_MIGRATION_PCT;
+			sum_down_pct += GENERIC_TIER_MIGRATION_PCT;
+
+		} else {
+			sum_up_pct   += mem_tier[i].upgrade_pct;
+			sum_down_pct += mem_tier[i].downgrade_pct;
+		}
 	}
 
 	if (sum_up_pct == 0)
 		return 100;
 
 	return sum_down_pct * 100 / sum_up_pct;
-
 }
 
 void process_ibs_fetch_samples_tier(struct bst_node **rootpp,

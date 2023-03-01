@@ -92,5 +92,4 @@ int node_freemem_get(int node);
 int update_per_node_freemem(void);
 extern int max_nodes;
 extern int verbose;
-extern bool tier_mode;
 #endif

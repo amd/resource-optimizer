@@ -46,8 +46,6 @@ struct {
 	__uint(max_entries, 16384);
 } process_stats_map SEC(".maps");
 
-static struct process_stats process_stats_global[MAX_PROCESS_STATS_IDX];
-static u64 process_stats_free[MAX_PROCESS_STATS_IDX];
 static int memory_node_get(u64 address)
 {
 	int i;
@@ -106,7 +104,6 @@ static void update_process_statistics(u64 tgid, u64 address, bool fetch)
 	struct process_stats *statsp;
 	int mem_node, cpu_node = 0;
 	u64 curr_tgid = tgid;
-	//pid_t pid = (pid_t)tgid;
 
 	cpu_node = cpu_node_get();
 	if (!VALID_NODE(cpu_node))

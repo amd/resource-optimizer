@@ -60,13 +60,10 @@ all:   $(BIN_KERN) \
 
 getpaddr.o: getpaddr.c
 	$(CLANG) -c $<  ${USR_INCLUDE}
-
 processtats_user.o: processtats_user.c
 	$(CLANG) -c $<  ${USR_INCLUDE} -mcmodel=large
-
 %_numa.o: %_numa.c
 	$(CLANG) -c $<  ${USR_INCLUDE} -mcmodel=large
-
 %_tier.o: %_tier.c
 	$(CLANG) -c $<  ${USR_INCLUDE} -mcmodel=large
 %_tracer.o: %_tracer.c

@@ -92,8 +92,7 @@ static bool processtats;
 
 static void save_fetch_latency(u64 reg, u64 addr, int idx);
 static void save_op_latency(u64 reg, u64 addr, int idx);
-static void save_node_usage(pid_t pid,
-                     volatile u32 counts[MAX_NUMA_NODES]);
+static void save_node_usage(volatile u32 counts[MAX_NUMA_NODES]);
 static int process_fetch_samples(u64 tgid,
 				 struct value_fetch *fetch_data,
                                  u64 ip, u32 page_size);
@@ -176,7 +175,6 @@ static void init_function(void)
 			if (valuep != NULL && (*valuep > 0))
 				defer_cnt = *valuep;
 		}
-
 	}
 
 	if (check_ppid == 1) {

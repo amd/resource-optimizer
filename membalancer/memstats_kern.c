@@ -90,8 +90,7 @@ static void inc_resource_usage(const int node,
 	}
 }
 
-static void save_node_usage(pid_t pid,
-		            volatile u32 counts[MAX_NUMA_NODES])
+static void save_node_usage(volatile u32 counts[MAX_NUMA_NODES])
 {
 	int node;
 
@@ -197,9 +196,9 @@ static int process_fetch_samples(u64 tgid, struct value_fetch *fetch_data,
 
 		save_fetch_latency(fetch_data->fetch_regs[IBS_FETCH_CTL], key,
 				  ATOMIC_READ(&valuep->count));
- 		ATOMIC_INC(&valuep->count);
 
-		save_node_usage(tgid >> 32,  valuep->counts);
+		save_node_usage(valuep->counts);
+ 		ATOMIC_INC(&valuep->count);
 
 		/* Have dense samples before processing */
 		if (!defer_cnt)
@@ -212,11 +211,11 @@ static int process_fetch_samples(u64 tgid, struct value_fetch *fetch_data,
 
 	save_fetch_latency(fetch_data->fetch_regs[IBS_FETCH_CTL], key, 0);
 
-	ATOMIC_SET(&fetch_data->count, 1);
 	fetch_data->tgid = tgid;
 	fetch_data->filler = 0;
 
-	save_node_usage(tgid >> 32, fetch_data->counts);
+	save_node_usage(fetch_data->counts);
+	ATOMIC_SET(&fetch_data->count, 1);
 
 	/* If its is akernel sample or user sample with process id
 	* then record it.
@@ -251,8 +250,8 @@ static int process_op_samples(u64 tgid, struct value_op *op_data,
 	if (valuep) {
 		save_op_latency(op_data->op_regs[IBS_OP_DATA3], key,
 				ATOMIC_READ(&valuep->count));
+		save_node_usage(valuep->counts);
 		ATOMIC_INC(&valuep->count);
-		save_node_usage(tgid >> 32, valuep->counts);
 
 		/* Have dense samples before processing */
 		if (!defer_cnt)
@@ -265,12 +264,12 @@ static int process_op_samples(u64 tgid, struct value_op *op_data,
 
 	save_op_latency(op_data->op_regs[IBS_OP_DATA3], key, 0);
 
-	ATOMIC_SET(&op_data->count, 1);
 	op_data->tgid = tgid;
 	op_data->ip = ip;
 	op_data->filler = 0;
 
-	save_node_usage(tgid >> 32, op_data->counts);
+	save_node_usage(op_data->counts);
+	ATOMIC_SET(&op_data->count, 1);
 
 	/* If its is akernel sample or user sample with process id
 	* then record it.

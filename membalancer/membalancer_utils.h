@@ -58,8 +58,8 @@ struct ibs_op_sample {
 
 extern bool histogram_format;
 extern int report_frequency;
-extern bool tier_mode;
 extern bool do_migration;
+extern bool l3miss;
 
 extern cpu_set_t node_cpumask[MAX_NUMA_NODES];
 extern struct ibs_fetch_sample fetch_samples[MAX_NUMA_NODES][MAX_IBS_SAMPLES];
@@ -109,6 +109,9 @@ int freemem_threshold(void);
 
 int init_generic_tier(void);
 int nodes_at_hop_or_tier(int node, int hop_or_tier, int *countp, int **listpp);
+bool is_tier_mode(void);
+bool is_default_tier_mode(void);
+void set_tier_mode(void);
 
 #define BRIGHT   "\x1b[1m"
 #define MAGENTA  "\x1B[35m"
