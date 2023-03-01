@@ -47,6 +47,8 @@
 
 int max_nodes;
 struct numa_node_mem numa_table[MAX_NUMA_NODES];
+struct numa_node_cpu numa_node_cpu[MAX_NUMA_NODES];
+int numa_cpu[MAX_CPU_CORES];
 
 static unsigned long fetch_overall_samples[MAX_NUMA_NODES];
 static unsigned long op_overall_samples[MAX_NUMA_NODES];

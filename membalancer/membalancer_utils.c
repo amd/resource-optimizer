@@ -31,8 +31,13 @@
 #include<cpuid.h>
 #include<stdbool.h>
 #include<stdio.h>
+#include<stdlib.h>
+#include<unistd.h>
+#include <assert.h>
+#include <errno.h>
 
 #include "membalancer_utils.h"
+#include "membalancer_numa.h"
 
 #define VENDOR_ID_LEN 12  /* cpu vendor id length in bytes */
 #define REG_COUNT 3   /* number of registers to read cpu vendor id */
@@ -169,4 +174,104 @@ unsigned long seconds_elapsed(struct timeval *start, struct timeval *end)
 	seconds /= 1000 * 1000;
 
 	return seconds;
+}
+
+
+static double numa_node_loadavg[MAX_NUMA_NODES];
+int idle_cpu_cnt[MAX_NUMA_NODES];
+
+static int get_cpu_util(struct cpu_utilinfo *cpuutil)
+{
+	char str[100];
+	const char d[2] = " ";
+	char *token;
+	int idx = 0, i = 0;
+	long double totaltime, idletime;
+	FILE *fp;
+
+	fp = fopen("/proc/stat","r");
+	if (!fp)
+		return -errno;
+
+	fgets(str, 100, fp);
+	while (idx < nr_cpus && fgets(str, 100, fp) != NULL) {
+		token = strtok(str,d);
+		totaltime = 0;
+		idletime = 0;
+		while(token != NULL) {
+
+			token = strtok(NULL,d);
+			if(token != NULL){
+				totaltime += atoi(token);
+				if(i == IDLE_FIELD || i == IOWAIT_FIELD)
+					idletime += atoi(token);
+
+				assert(i < MAX_FIELDS);
+				i++;
+			}
+		}
+		i = 0;
+		cpuutil[idx].idletime = idletime;
+		cpuutil[idx].totaltime = totaltime;
+		idx++;
+	}
+	fclose(fp);
+	return 0;
+}
+
+/*
+ * TODO make update_node_loadavg atomic for parallel
+ * update and consumption.
+ */
+int update_node_loadavg(void)
+{
+	struct cpu_utilinfo snap1[MAX_CPU_CORES] = { 0 };
+	struct cpu_utilinfo snap2[MAX_CPU_CORES] = { 0 };
+	int node;
+	int err;
+
+	err = get_cpu_util(snap1);
+	if (err)
+		return err;
+	sleep(1);
+	err = get_cpu_util(snap2);
+	if (err)
+		return err;
+
+	memset(idle_cpu_cnt, 0, MAX_NUMA_NODES * sizeof(int));
+	memset(numa_node_loadavg, 0, MAX_NUMA_NODES * sizeof(double));
+
+	for (int cpu = 0; cpu < MAX_CPU_CORES; cpu++ ) {
+		if (numa_cpu[cpu] == -1)
+			continue;
+
+		node = numa_cpu[cpu];
+		double total_delta = snap2[cpu].totaltime- snap1[cpu].totaltime;
+		double idle_delta = snap2[cpu].idletime - snap1[cpu].idletime;
+		double util  = 100.0 * (1.0 - idle_delta / total_delta);
+		numa_node_loadavg[node] += util;
+
+		if ((100 - util) > cpu_idle_threshold)
+			idle_cpu_cnt[node]++;
+	}
+
+	for (int i = 0; i < max_nodes; i++) {
+		if (!numa_node_cpu[i].cpu_cnt) {
+			/* Node without CPU */
+			numa_node_loadavg[i] = 100;
+			idle_cpu_cnt[i] = 0;
+			continue;
+		}
+		numa_node_loadavg[i] /= numa_node_cpu[i].cpu_cnt;
+		/* Throttle the migration by throttling
+		 * idle cpu capacity of each node.
+		 */
+		idle_cpu_cnt[i] /= migration_throttle_limit;
+	}
+	return 0;
+}
+
+int get_node_loadavg(int node)
+{
+	return numa_node_loadavg[node];
 }

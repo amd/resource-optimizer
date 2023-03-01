@@ -56,6 +56,35 @@ struct ibs_op_sample {
         unsigned long op_regs[IBSOP_REG_COUNT];
 };
 
+#define node_load_avg_threshold 70
+#define cpu_idle_threshold 80
+#define migration_throttle_limit 10
+extern int idle_cpu_cnt[MAX_NUMA_NODES];
+extern int nr_cpus;
+
+struct cpu_utilinfo {
+	int cpu;
+	long double idletime;
+	long double totaltime;
+};
+
+enum {
+		USER_FIELD,
+		NICE_FIELD,
+		SYSTEM_FIELD,
+		IDLE_FIELD,
+		IOWAIT_FIELD,
+		IRQ_FIELD,
+		SOFTIRQ_FIELD,
+		STEAL_FIELD,
+		GUEST_FIELD,
+		GUEST_NICE,
+		MAX_FIELDS,
+};
+
+int update_node_loadavg(void);
+int get_node_loadavg(int node);
+
 extern bool histogram_format;
 extern int report_frequency;
 extern bool do_migration;

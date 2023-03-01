@@ -75,7 +75,7 @@
 #define MIN_MIGRATED_PAGES 	1024
 #define MIN_MIGRATED_PAGES_TIER 4096
 
-static int nr_cpus;
+int nr_cpus;
 static double min_pct = 0.01;
 static bool user_space_only = false;
 int verbose = 2;
@@ -663,6 +663,7 @@ static int populate_cpu_map(struct bpf_object *obj, int fd, int node,
 	unsigned char next_cpuset;
 	int next_cpu, i, j;
 	int k;
+	int cpu_cnt = 0;
 
 	k = 0;
 	CPU_ZERO(&node_cpumask[node]);
@@ -678,15 +679,18 @@ static int populate_cpu_map(struct bpf_object *obj, int fd, int node,
 			continue;
 
 		assert(next_cpuset == 'f');
-	
+
 		for (j = 0; j < 4; j++) {
 			next_cpu = k * 4 + j;
 			CPU_SET(next_cpu, &node_cpumask[node]);
 			bpf_map_update_elem(fd, &next_cpu, &node, BPF_NOEXIST);
+			numa_node_cpu[node].cpu_list[cpu_cnt++] = next_cpu;
+			/* Keeping a simple lookup table for cpu to node */
+			numa_cpu[next_cpu]  = node;
 		}
 		k++;
 	}
-
+	numa_node_cpu[node].cpu_cnt = cpu_cnt;
 
 	return 0;
 }
@@ -699,6 +703,8 @@ static int fill_cpu_nodes(struct bpf_object *obj)
 	fd = bpf_object__find_map_fd_by_name(obj, "cpu_map");
 	if (fd < 0)
 		return -EINVAL;
+
+	memset(numa_cpu, -1, MAX_CPU_CORES * sizeof(int));
 
 	for (node = 0;; node++) {
 		bytes = read_cpu_node(node, cpu_map, sizeof(cpu_map));
@@ -1673,6 +1679,14 @@ static void process_samples(int *map_fd, int msecs, int fetch)
 		atomic64_sub(&ibs_pending_op_samples, op_cnt);
 	}
 
+	if (do_migration && !(tuning_mode & MEMORY_MOVE)) {
+		if (update_node_loadavg() != 0) {
+			fprintf(stderr, "Cannot load per-node cpu "
+			        "load average information\n");
+			return;
+		}
+	}
+
 	if (update_per_node_freemem() != 0) {
 		fprintf(stderr, "Cannot load per-node freemem information\n");
 		return;
@@ -1689,7 +1703,7 @@ static void process_samples(int *map_fd, int msecs, int fetch)
 		/* Capture and update the process run data
 		 * till the sampling_interval_cnt.
 		 */
-		if (sampling_interval_cnt && sampling_iter % sampling_interval_cnt) {
+		if (sampling_interval_cnt && sampling_iter < sampling_interval_cnt) {
 			printf("Capturing process run data :"
 				"sampling_iter=%u/%u\n", sampling_iter,
 				sampling_interval_cnt);
@@ -2627,7 +2641,8 @@ int main(int argc, char **argv)
 		err  = init_tier(tier_args);
 		if (err)
 			return err;
-	}
+	} else
+		init_generic_tier();
 
 	if (!include_cpus) {
 		/*

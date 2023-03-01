@@ -59,6 +59,17 @@ struct mem_tier {
 
 extern struct numa_node_mem numa_table[MAX_NUMA_NODES];
 
+/*TODO: Using this structure only for per node cpu_cnt.
+ * Remove if not really required.
+ */
+struct numa_node_cpu {
+	int cpu_cnt;
+	int cpu_list[MAX_CPU_CORES];
+};
+
+extern struct numa_node_cpu numa_node_cpu[MAX_NUMA_NODES];
+extern int numa_cpu[MAX_CPU_CORES];
+
 int get_current_node(unsigned long physaddr);
 int fill_numa_table(void);
 int init_tier( char *args);
