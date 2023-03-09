@@ -65,13 +65,8 @@
 #include "heap_user.h"
 #include "membalancer_user.h"
 
-#define MEMB_CLOCK 25 
+#define MEMB_CLOCK 25
 #define MEMB_INTVL 100
-#define MIN_IBS_CLASSIC_SAMPLES 200
-#define MIN_IBS_L3MISS_SAMPLES  200
-#define MIN_IBS_SAMPLES min_ibs_samples
-#define MIN_IBS_FETCH_SAMPLES (MIN_IBS_SAMPLES / 4)
-#define MIN_IBS_OP_SAMPLES    (MIN_IBS_SAMPLES / 2)
 #define MIN_MIGRATED_PAGES 	1024
 #define MIN_MIGRATED_PAGES_TIER 4096
 
@@ -88,11 +83,11 @@ static float maximizer_mode = 0.2;
 int report_frequency = 1;
 static char *trace_dir;
 bool tracer_physical_mode = true;
-static unsigned int min_ibs_samples = MIN_IBS_CLASSIC_SAMPLES;
+unsigned int min_ibs_samples = MIN_IBS_CLASSIC_SAMPLES;
 static int migration_timeout_sec = 60;
 static int min_migrated_pages = MIN_MIGRATED_PAGES;
 
-static char cmd_args[]  = "c:f:F:P:p:r:m:M:v:U:T:t:D:L:B:uhcbHVlS::";
+static char cmd_args[]  = "c:f:F:P:p:r:m:M:v:U:T:t:D:L:B:I:uhcbHVlS::";
 static int ibs_fetch_device = -1;
 static int ibs_op_device    = -1;
 #define FETCH_CONFIG        57
@@ -105,6 +100,7 @@ static int ibs_op_config;
 static unsigned int cpu_nodes;
 static pid_t mypid;
 bool l3miss = false;
+int iprofiler;
 
 static u32 sampling_interval_cnt = 100;
 static u32 sampling_iter;
@@ -113,15 +109,10 @@ u32 curr_proc_data_map_idx;
 
 static int min_freemem_pct = 10;
 
-static atomic64_t fetch_cnt, op_cnt, pages_migrated;
+atomic64_t fetch_cnt, op_cnt, pages_migrated;
 
 #define IBS_FETCH_DEV "/sys/devices/ibs_fetch/type"
 #define IBS_OP_DEV    "/sys/devices/ibs_op/type"
-
-struct ibs_fetch_sample fetch_samples[MAX_NUMA_NODES][MAX_IBS_SAMPLES];
-unsigned long fetch_samples_max[MAX_NUMA_NODES];
-unsigned long fetch_samples_cnt[MAX_NUMA_NODES];
-
 
 #define PAGES_PER_CALL 32
 #define MAX_PAGES_PER_CALL 65536
@@ -163,13 +154,9 @@ static atomic64_t ibs_workers;
 static atomic64_t ibs_pending_fetch_samples;
 static atomic64_t ibs_pending_op_samples;
 
- struct ibs_op_sample op_samples[MAX_NUMA_NODES][MAX_IBS_SAMPLES];
-unsigned long op_samples_max[MAX_NUMA_NODES];
-unsigned long op_samples_cnt[MAX_NUMA_NODES];
-
 static void * page_move_function(void *arg);
-static unsigned long upgrade_align   = 256 * PAGE_SIZE; 
-static unsigned long downgrade_align = 256 * PAGE_SIZE; 
+static unsigned long upgrade_align   = 256 * PAGE_SIZE;
+static unsigned long downgrade_align = 256 * PAGE_SIZE;
 
 static void usage(const char *cmd)
 {
@@ -210,6 +197,8 @@ static void usage(const char *cmd)
 			"        [-<tier_num>:<...>]\n");
 	printf("       -F minimum percentage of free memory in a node "
 			"to perform migraitons to it\n");
+	printf("       -I <n>  runs in the profiler mode, reports up to "
+			"n top most samples of instruction and data\n");
 	printf("       <duration> Interval in milliseconds, "
 	       "default %d\n", MEMB_INTVL);
 
@@ -247,6 +236,10 @@ static void usage(const char *cmd)
 	       cmd);
 	printf("8. Example for list of cpus\n");
 	printf("%s -u -P 99053 -c 1,2,3,10-20,30-40\n",cmd);
+	printf("\n");
+	printf("9. Example for instruction profiler that reports 5 top most ");
+	printf("instruction and data\n   samples in everty 2 seconds\n");
+	printf("%s  -f 25 -u  -v4 -m 0.0001 -M 1 -r 2 200 -H  -I5 -r2\n", cmd);
 	printf("\n");
 }
 
@@ -906,18 +899,6 @@ static void * page_move_function(void *arg)
 	return NULL;
 }
 
-static int fetch_cmp(const void *p1, const void *p2)
-{
-	const struct ibs_fetch_sample *s1 = p1, *s2 = p2;
-	
-	return s1->count - s2->count;
-}
-
-static char * get_process(__u64 tgid)
-{
-	return "";
-}
-
 static unsigned long peek_ibs_samples(int fd, unsigned long old,
 				      unsigned long *new)
 {
@@ -939,146 +920,6 @@ static unsigned long peek_ibs_samples(int fd, unsigned long old,
 	*new = new_value;
 
 	return messages;
-}
-
-static int get_ibs_fetch_samples(int fd,  __u64 *total_freq)
-{
-	__u64 key, next_key;
-	struct value_fetch value;
-	int i, j, max, node;
-	long total = 0;
-	unsigned long paddr;
-	int dense_samples = 0;
-	bool table_full = false;
-
-	for (i = 0; i < max_nodes; i++) {
-		fetch_samples_max[i] = 0;
-		fetch_samples_cnt[i] = 0;
-	}
-
-	/* Process fetch samples from the map*/
-	key = 0;
-	i = 0;
-	while (bpf_map_get_next_key(fd, &key, &next_key) == 0) {
-		bpf_map_lookup_elem(fd, &next_key, &value);
-
-		atomic64_inc(&fetch_cnt);
-#ifdef USE_PAGEMAP
-		paddr = get_physaddr((pid_t)value.tgid,	
-				value.fetch_regs[IBS_FETCH_LINADDR]);
-		if (paddr == (unsigned long)-1) {
-			key = next_key;
-			bpf_map_delete_elem(fd, &next_key);
-			continue;
-		}
-
-		paddr *= PAGE_SIZE;
-		/*
-		assert(paddr == (value.fetch_regs[IBS_FETCH_PHYSADDR] &
-				 ~(MEMB_PAGE_SIZE - 1)));
-		*/
-#else
-		paddr = value.fetch_regs[IBS_FETCH_PHYSADDR];
-#endif
-
-		node = get_current_node(paddr);
-		assert(node >= -1 && node < (long)max_nodes);
-		if (node < 0 || node >= (long)max_nodes) {
-			bpf_map_delete_elem(fd, &next_key);
-			key = next_key;
-			continue;
-		}
-
-		if (i >= MAX_IBS_SAMPLES) {
-			bpf_map_delete_elem(fd, &next_key);
-			key = next_key;
-			table_full = true;
-			continue;
-		}
-
-		if (value.count >= MIN_DENSE_SAMPLE_FREQ)
-			dense_samples++;
-
-		fetch_samples[node][i].ip    = next_key;
-		fetch_samples[node][i].count = value.count;
-		fetch_samples[node][i].tgid  = value.tgid;
-
-		for (j = 0; j < max_nodes; j++)
-			fetch_samples[node][i].counts[j] = value.counts[j];
-
-		if (!IBS_KERN_SAMPLE(fetch_samples[node][i].ip))
-			snprintf(fetch_samples[node][i].process,
-				sizeof(fetch_samples[node][i].process),
-					"%s",
-					get_process(value.tgid));
-
-		fetch_samples[node][i].fetch_regs[IBS_FETCH_CTL] =
-				value.fetch_regs[IBS_FETCH_CTL];
-		fetch_samples[node][i].fetch_regs[IBS_FETCH_LINADDR] =
-				value.fetch_regs[IBS_FETCH_LINADDR];
-		fetch_samples[node][i].fetch_regs[IBS_FETCH_PHYSADDR] =
-				value.fetch_regs[IBS_FETCH_PHYSADDR];
-		
-		total += fetch_samples[node][i].count;
-		fetch_samples_max[node] += fetch_samples[node][i].count;
-		i++;
-		
-		fetch_samples_cnt[node]++;
-		key = next_key;
-	}
-
-	/* Proceed if there are sufficient dense samples */
-	if (!table_full && dense_samples < MIN_DENSE_SAMPLES_CODE)
-		return 0;
-
-	key = 0;
-	while (bpf_map_get_next_key(fd, &key, &next_key) == 0) {
-		bpf_map_lookup_elem(fd, &next_key, &value);
-		bpf_map_delete_elem(fd, &next_key);
-		key = next_key;
-	}
-
-	max = i;
-
-	/* sort samples */
-       for (node = 0; node < max_nodes; node++)
-                qsort(fetch_samples[node], fetch_samples_max[node],
-                      sizeof(struct ibs_fetch_sample), fetch_cmp);
-
-	if (max >= MAX_IBS_SAMPLES) 
-		printf("Processed maximum samples. "
-		       "Likely to have dropped some. Increase the value of "
-		       "MAX_IBS_SAMPLES\n");
-
-	*total_freq = total;
-
-	return max;
-}
-
-static void cleanup_fetch_samples(int fd)
-{
-	__u64 key, next_key;
-	struct value_fetch value;
-	int i, j;
-
-	for (i = 0; i < max_nodes; i++) {
-		fetch_samples_max[i] = 0;
-		fetch_samples_cnt[i] = 0;
-	}
-
-	/* Process fetch samples from the map*/
-	key = 0;
-	i = 0;
-	while (bpf_map_get_next_key(fd, &key, &next_key) == 0) {
-		bpf_map_lookup_elem(fd, &next_key, &value);
-
-		bpf_map_delete_elem(fd, &next_key);
-		key = next_key;
-
-		for (j = 0; j < max_nodes; j++)
-			fetch_samples[j][i].count = 0;
-
-	}
 }
 
 #define MAX_BST_PAGES 8192
@@ -1248,183 +1089,29 @@ static void bst_process_pages(struct bst_node *root)
 	tdestroy(root, free);
 }
 
-static void process_ibs_fetch_samples(struct bst_node **rootpp,
-				      unsigned long total)
+static void process_code_samples(struct bst_node **rootpp, unsigned long total)
 {
 	if (trace_dir)
-		process_ibs_fetch_samples_tracer(rootpp, total,
-						 user_space_only);
+		process_code_samples_tracer(rootpp, total, user_space_only);
 	else if (is_tier_mode())
-		process_ibs_fetch_samples_tier(rootpp, total,
-		                               do_migration,
-		                               user_space_only);
+		process_code_samples_tier(rootpp, total, do_migration,
+					  user_space_only);
 	else
-		process_ibs_fetch_samples_numa(rootpp,  total,
-		                               do_migration,
-		                               user_space_only);
+		process_code_samples_numa(rootpp, total, do_migration,
+					  user_space_only);
 }
 
-static int op_cmp(const void *p1, const void *p2)
-{
-	const struct ibs_op_sample *s1 = p1, *s2 = p2;
-
-	return s1->count - s2->count;
-}
-
-static int get_ibs_op_samples(int fd, __u64 *total_freq)
-{
-	__u64 key, next_key;
-	struct value_op value;
-	int i, j, max, node;
-	long total = 0;
-	unsigned long paddr;
-	int dense_samples = 0;
-	bool table_full = false;
-
-	for (i = 0; i < max_nodes; i++)
-		op_samples_max[i] = 0;
-
-	/* Process op samples from the map*/
-	key = 0;
-	 i = 0;
-	while (bpf_map_get_next_key(fd, &key, &next_key) == 0) {
-		bpf_map_lookup_elem(fd, &next_key, &value);
-
-		atomic64_inc(&op_cnt);
-#ifdef USE_PAGEMAP
-		paddr = get_physaddr((pid_t)value.tgid,	
-				value.op_regs[IBS_DC_LINADDR]);
-		if (paddr == (unsigned long)-1) {
-			key = next_key;
-			bpf_map_delete_elem(fd, &next_key);
-			continue;
-		}
-
-		paddr *= PAGE_SIZE;
-
-		/*
-		assert(paddr == (value.op_regs[IBS_DC_PHYSADDR] &
-				 ~(MEMB_PAGE_SIZE - 1)));
-		*/
-#else
-		paddr = value.op_regs[IBS_DC_PHYSADDR];
-#endif
-
-		node = get_current_node(paddr);
-		assert(node >= -1 && node < (long)max_nodes);
-		if (node < 0 || node >= (long)max_nodes) {
-			key = next_key;
-			bpf_map_delete_elem(fd, &next_key);
-			continue;
-		}
-
-		if (i >= MAX_IBS_SAMPLES) {
-			bpf_map_delete_elem(fd, &next_key);
-			key = next_key;
-			table_full = true;
-			continue;
-		}
-
-		op_samples[node][i].key   = next_key;
-		op_samples[node][i].count = value.count;
-		op_samples[node][i].tgid  = value.tgid;
-
-		for (j = 0; j < max_nodes; j++)
-			op_samples[node][i].counts[j] = value.counts[j];
-
-		if (value.count >= MIN_DENSE_SAMPLE_FREQ)
-			dense_samples++;
-
-		if (!IBS_KERN_SAMPLE(value.op_regs[IBS_OP_RIP]))
-			snprintf(op_samples[node][i].process,
-				sizeof(op_samples[node][i].process),
-				"%s",
-				get_process(op_samples[node][i].tgid));
-
-		op_samples[node][i].op_regs[IBS_OP_CTL] =
-				value.op_regs[IBS_OP_CTL];
-		op_samples[node][i].op_regs[IBS_OP_RIP] =
-				value.op_regs[IBS_OP_RIP];
-		op_samples[node][i].op_regs[IBS_OP_DATA] =
-				value.op_regs[IBS_OP_DATA];
-		op_samples[node][i].op_regs[IBS_OP_DATA2] =
-				value.op_regs[IBS_OP_DATA2];
-		op_samples[node][i].op_regs[IBS_OP_DATA3] =
-				value.op_regs[IBS_OP_DATA3];
-		op_samples[node][i].op_regs[IBS_DC_LINADDR] =
-				value.op_regs[IBS_DC_LINADDR];
-		op_samples[node][i].op_regs[IBS_DC_PHYSADDR] =
-				value.op_regs[IBS_DC_PHYSADDR];
-		
-		total += op_samples[node][i].count;
-		op_samples_max[node] += op_samples[node][i].count;
-		i++;
-
-		op_samples_cnt[node]++;
-		key = next_key;
-	}
-
-	/* Proceed if there are sufficient dense samples */
-	if (!table_full && dense_samples < MIN_DENSE_SAMPLES_DATA)
-		return 0;
-
-	key = 0;
-	while (bpf_map_get_next_key(fd, &key, &next_key) == 0) {
-		bpf_map_lookup_elem(fd, &next_key, &value);
-		bpf_map_delete_elem(fd, &next_key);
-		key = next_key;
-	}
-
-	max = i;
-
-	/* sort */
-	for (node = 0; node < max_nodes; node++)
-		qsort(op_samples[node], op_samples_max[node],
-		      sizeof(struct ibs_op_sample), op_cmp);
-
-	if (max >= MAX_IBS_SAMPLES) 
-		printf("Processed maximum samples. "
-		       "Likely to have dropped some. Increase the value of "
-		       "MAX_IBS_SAMPLES\n");
-
-	*total_freq = total;
-
-	return max;
-}
-
-static void cleanup_op_samples(int fd)
-{
-	__u64 key, next_key;
-	struct value_op value;
-	int i, j;
-
-	/* Process op samples from the map*/
-	key = 0;
-	 i = 0;
-	while (bpf_map_get_next_key(fd, &key, &next_key) == 0) {
-		bpf_map_lookup_elem(fd, &next_key, &value);
-		key = next_key;
-		bpf_map_delete_elem(fd, &next_key);
-
-
-		for (j = 0; j < max_nodes; j++)
-			op_samples[j][i].count = 0;
-	}
-}
-
-static void process_ibs_op_samples(struct bst_node **rootpp,
+static void process_data_samples(struct bst_node **rootpp,
 				   unsigned long total)
 {
 	if (trace_dir)
-		process_ibs_op_samples_tracer(rootpp, total, user_space_only);
+		process_data_samples_tracer(rootpp, total, user_space_only);
 	else if (is_tier_mode())
-		process_ibs_op_samples_tier(rootpp, total,
-		                            do_migration,
-		                            user_space_only);
-	else
-		process_ibs_op_samples_numa(rootpp, total,
-		                            do_migration,
-		                            user_space_only);
+		process_data_samples_tier(rootpp, total, do_migration,
+					  user_space_only);
+	else 
+		process_data_samples_numa(rootpp, total, do_migration,
+					  user_space_only);
 }
 
 static void print_memory_access_summary_histogram(unsigned long code,
@@ -1567,7 +1254,7 @@ static void print_memory_access_summary(void)
 	if (atomic_cmxchg(&print_summary, 0, 1))
 		return;
 
-	if (start.tv_sec == 0 && start.tv_sec == 0)
+	if (start.tv_sec == 0 && start.tv_usec == 0)
 		gettimeofday(&start, NULL);
 
 	gettimeofday(&end, NULL);
@@ -1736,24 +1423,28 @@ static void process_samples(int *map_fd, int msecs, int fetch)
 	total_freq_op = 0;
 
 	if (fetch_cnt >= MIN_IBS_FETCH_SAMPLES) {
-		fetch_cnt = get_ibs_fetch_samples(map_fd[IBS_FETCH_MAP],
-						  &total_freq_fetch);
+		fetch_cnt = get_code_samples(map_fd[IBS_FETCH_MAP],
+					     &total_freq_fetch,
+					     true);
 		if (fetch_cnt) {
 			update_sample_statistics(fetch_samples_max, true);
-			process_ibs_fetch_samples(&root, total_freq_fetch);
+			process_code_samples(&root, total_freq_fetch);
 		}
 	}
 
 	if (op_cnt >= MIN_IBS_OP_SAMPLES) {
-		op_cnt = get_ibs_op_samples(map_fd[IBS_OP_MAP], &total_freq_op);
+		op_cnt = get_data_samples(map_fd[IBS_OP_MAP],
+					  &total_freq_op,
+					  true);
 		if (op_cnt) {
 			update_sample_statistics(op_samples_max, false);
-			process_ibs_op_samples(&root, total_freq_op);
+			process_data_samples(&root, total_freq_op);
 		}
 	}
 
-	if (!fetch_cnt && !op_cnt) 
+	if (!fetch_cnt && !op_cnt)
 		return;
+
 
 	if (trace_dir)
 		report_tracer_statistics();
@@ -1761,7 +1452,6 @@ static void process_samples(int *map_fd, int msecs, int fetch)
 		print_memory_access_summary();
 
 	bst_process_pages(root);
-	
 }
 
 static bool ibs_pending_samples(void)
@@ -1961,8 +1651,8 @@ static int pages_migration_status(int msecs,
 
 static void balancer_cleanup(int fetch_fd, int op_fd)
 {
-	cleanup_fetch_samples(fetch_fd);
-	cleanup_op_samples(op_fd);
+	cleanup_code_samples(fetch_fd);
+	cleanup_data_samples(op_fd);
 }
 
 static void set_knob(int fd, int knob, int value)
@@ -2066,7 +1756,7 @@ static int init_and_load_bpf_programs(struct bpf_program **prog,
 	int sts = 0;
 
 	switch(profile) {
-		case MEMORY:
+	case MEMORY:
 			if (verbose >= 5)
 				printf("Loading bpf programs and maps for "
 					"memory profile\n");
@@ -2195,20 +1885,25 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 	if (user_space_only)
 		set_knob(map_fd[KNOBS], USER_SPACE_ONLY, 1);
 
-	fill_value_latency_buffers(obj);
+	if (iprofiler) {
+		if (l3miss)
+			set_knob(map_fd[KNOBS], LATENCY_STATS_L3MISS, 1);
+		else
+			set_knob(map_fd[KNOBS], LATENCY_STATS, 1);
+	}
 
-	/*
-	set_knob(map_fd[KNOBS], PER_NUMA_LATENCY_STATS, 1);
-	*/
 	set_knob(map_fd[KNOBS], MY_PAGE_SIZE, MEMB_PAGE_SIZE);
 	set_knob(map_fd[KNOBS], MY_OWN_PID, getpid());
 	set_knob(map_fd[KNOBS], KERN_VERBOSE, verbose);
 
-	if (l3miss)
-		set_knob(map_fd[KNOBS], DEFER_PROCESS,
-			 L3MISS_DEFER_PROCESS_CNT);
-	else
-		set_knob(map_fd[KNOBS], DEFER_PROCESS, DEFER_PROCESS_CNT);
+	if (iprofiler == 0) {
+		if (l3miss)
+			set_knob(map_fd[KNOBS], DEFER_PROCESS,
+				 L3MISS_DEFER_PROCESS_CNT);
+		else
+			set_knob(map_fd[KNOBS], DEFER_PROCESS,
+				 DEFER_PROCESS_CNT);
+	}
 
 	if (tuning_mode == PROCESS_MOVE ||
 		tuning_mode == AUTOTUNE) {
@@ -2381,8 +2076,14 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 		if (op_links)
 			ibs_sampling_end(op_links);    /* IBS op */
 
-
-		ibs_process_samples(ibs_worker, fetch_cnt, op_cnt);
+		if (iprofiler) {
+			profiler_process_samples(map_fd[IBS_FETCH_MAP],
+						 map_fd[IBS_OP_MAP],
+						 fetch_cnt, op_cnt);
+			report_profiler_information(false);
+		} else {
+			ibs_process_samples(ibs_worker, fetch_cnt, op_cnt);
+		}
 
 		usleep(msecs * 1000 / maximizer_mode);
 	}
@@ -2570,6 +2271,9 @@ int main(int argc, char **argv)
 			break;
 		case 'v':
 			verbose = atoi(optarg);
+			break;
+		case 'I':
+			iprofiler = atoi(optarg);
 			break;
 		case 'h':
 			usage(argv[0]);

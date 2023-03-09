@@ -80,25 +80,22 @@ void get_sample_statistics_numa(bool fetch, unsigned long **samples,
 				int *count);
 void get_sample_statistics_tier(bool fetch, unsigned long **samples,
 				int *count);
-
-void process_ibs_fetch_samples_numa(struct bst_node **rootpp,
-                                    unsigned long total,
-                                    bool balancer_mode,
-                                    bool user_space_only);
-void process_ibs_op_samples_numa(struct bst_node **rootpp,
-				 unsigned long total,
-				 bool balancer_mode,
-				 bool user_space_only);
-
-void process_ibs_fetch_samples_tier(struct bst_node **rootpp,
-                                    unsigned long total,
-                                    bool balancer_mode,
-                                    bool user_space_only);
-
-void process_ibs_op_samples_tier(struct bst_node **rootpp,
-                                 unsigned long total,
-                                 bool balancer_mode,
-                                 bool user_space_only);
+void process_code_samples_numa(struct bst_node **rootpp,
+			       unsigned long total,
+			       bool balancer_mode,
+			       bool user_space_only);
+void process_data_samples_numa(struct bst_node **rootpp,
+			       unsigned long total,
+			       bool balancer_mode,
+			       bool user_space_only);
+void process_code_samples_tier(struct bst_node **rootpp,
+			       unsigned long total,
+			       bool balancer_mode,
+			       bool user_space_only);
+void process_data_samples_tier(struct bst_node **rootpp,
+			       unsigned long total,
+			       bool balancer_mode,
+			       bool user_space_only);
 int node_freemem_get(int node);
 int update_per_node_freemem(void);
 extern int max_nodes;

@@ -51,12 +51,6 @@ enum balancer_knobs {
 	TOTAL_KNOBS,
 };
 
-#define MAX_LATENCY_IDX 512
-struct value_latency {
-	volatile int idx;
-	volatile u32 latency[MAX_LATENCY_IDX];
-};
-
 struct process_stats {
 	volatile u32 memory[MAX_NUMA_NODES];
 	volatile u32 cpu[MAX_NUMA_NODES];

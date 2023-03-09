@@ -31,13 +31,6 @@
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, int);
-	__type(value, struct value_latency);
-	__uint(max_entries, MAX_CPU_CORES);
-}  per_cpu_value_latency SEC(".maps");
-
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, int);
 	__type(value, struct process_stats);
 	__uint(max_entries, MAX_CPU_CORES);
 }  per_cpu_process_stats SEC(".maps");
@@ -56,18 +49,9 @@ struct {
 	__uint(max_entries, MAX_CPU_CORES);
 }  per_cpu_value_op SEC(".maps");
 
-struct value_latency;
 struct process_stats;
 struct value_fetch;
 struct value_op;
-
-struct value_latency * get_value_latency(void)
-{
-	int key;
-
-	key = bpf_get_smp_processor_id();
-	return bpf_map_lookup_elem(&per_cpu_value_latency, &key);
-}
 
 struct process_stats * alloc_process_stats(void)
 {

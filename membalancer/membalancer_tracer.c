@@ -196,9 +196,9 @@ static int tracer_log_entry(int fd, int type, unsigned long vaddr,
 	return 0;
 }
 
-void process_ibs_fetch_samples_tracer(struct bst_node **rootpp,
-				    unsigned long total,
-				    bool user_space_only)
+void process_code_samples_tracer(struct bst_node **rootpp,
+				 unsigned long total,
+				 bool user_space_only)
 {
         int i, j, node, logfd;
         unsigned long count;
@@ -248,7 +248,6 @@ void process_ibs_fetch_samples_tracer(struct bst_node **rootpp,
 					 fetch_samples[node][i].fetch_regs[
 						IBS_FETCH_PHYSADDR],
 					 fetch_samples[node][i].count);
-			
 
                         fetch_samples[node][i].count = 0;
                 }
@@ -258,9 +257,9 @@ void process_ibs_fetch_samples_tracer(struct bst_node **rootpp,
 	close(logfd);
 }
 
-void process_ibs_op_samples_tracer(struct bst_node **rootpp,
-				   unsigned long total,
-				   bool user_space_only)
+void process_data_samples_tracer(struct bst_node **rootpp,
+				 unsigned long total,
+				 bool user_space_only)
 {
         int i, j, node, logfd;
         unsigned long count;

@@ -71,7 +71,6 @@ enum bpf_programs {
 	TOTAL_BPF_PROGRAMS
 };
 
-
 char * memory_profile_program_names[TOTAL_BPF_PROGRAMS] = {
 	"memstats_code_sampler",
 	"memstats_data_sampler",
@@ -97,17 +96,17 @@ static char * additional_programs_name[ADDITIONAL_PROGRAMS] = {
 /* Below NULL elements are kept to maintain the relative index,
  * keping TOTAL_MAPS fixed for any profile.
  */
-  
-char *memory_map_fd_names[TOTAL_MAPS] = {
+
+static char *memory_map_fd_names[TOTAL_MAPS] = {
 	"ibs_fetch_map",
 	"ibs_op_map",
 	NULL,
 	"fetch_counter",
 	"op_counter",
-	"knobs"
+	"knobs",
 };
 
-char *process_map_fd_names[TOTAL_MAPS] = {
+static char *process_map_fd_names[TOTAL_MAPS] = {
  	NULL,
 	NULL,
 	"process_stats_map",
@@ -115,6 +114,5 @@ char *process_map_fd_names[TOTAL_MAPS] = {
 	"op_counter",
 	"knobs"
 };
-
 
 #endif

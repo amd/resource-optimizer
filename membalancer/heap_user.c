@@ -81,25 +81,6 @@ int fill_process_stats_buffers(struct bpf_object *obj)
 	return 0;
 }
 
-int fill_value_latency_buffers(struct bpf_object *obj)
-{
-	int fd, i;
-	struct value_latency stats[MAX_CPU_CORES];
-
-	fd = bpf_object__find_map_fd_by_name(obj, "per_cpu_value_latency");
-
-	if (fd < 0) {
-		fprintf(stderr, "BPF cannot find per_cpu_value_latency map\n");
-		return -1;
-	}
-	for (i = 0; i < MAX_CPU_CORES; i++) {
-		memset(&stats[i], 0, sizeof(stats[i]));
-		bpf_map_update_elem(fd, &i, &stats[i], BPF_NOEXIST);
-	}
-
-	return 0;
-}
-
 static int fill_value_op_buffers(struct bpf_object *obj)
 {
 	int fd, i;
@@ -107,7 +88,7 @@ static int fill_value_op_buffers(struct bpf_object *obj)
 
 	fd = bpf_object__find_map_fd_by_name(obj, "per_cpu_value_op");
 	if (fd < 0) {
-		fprintf(stderr, "BPF cannot find per_cpu_value_latency map\n");
+		fprintf(stderr, "BPF cannot find per_cpu_value_op map\n");
 		return -1;
 	}
 
@@ -126,7 +107,7 @@ static int fill_value_fetch_buffers(struct bpf_object *obj)
 
 	fd = bpf_object__find_map_fd_by_name(obj, "per_cpu_value_fetch");
 	if (fd < 0) {
-		fprintf(stderr, "BPF cannot find per_cpu_value_latency map\n");
+		fprintf(stderr, "BPF cannot find per_cpu_value_fetch map\n");
 		return -1;
 	}
 
@@ -143,10 +124,6 @@ int init_heap(struct bpf_object *obj)
 	int err;
 
 	err = fill_process_stats_buffers(obj);
-	if (err)
-		return err;
-
-	err = fill_value_latency_buffers(obj);
 	if (err)
 		return err;
 

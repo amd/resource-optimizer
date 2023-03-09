@@ -292,10 +292,10 @@ void get_sample_statistics_numa(bool fetch, unsigned long **samples, int *count)
 	*samples = (fetch) ? fetch_overall_samples : op_overall_samples;
 }
 
-void process_ibs_fetch_samples_numa(struct bst_node **rootpp,
-				    unsigned long total,
-				    bool balancer_mode,
-				    bool user_space_only)
+void process_code_samples_numa(struct bst_node **rootpp,
+			       unsigned long total,
+			       bool balancer_mode,
+			       bool user_space_only)
 {
 	int i, j, k, node, target_node;
 	unsigned long count;
@@ -364,10 +364,10 @@ void process_ibs_fetch_samples_numa(struct bst_node **rootpp,
         }
 }
 
-void process_ibs_op_samples_numa(struct bst_node **rootpp,
-				 unsigned long total,
-				 bool balancer_mode,
-				 bool user_space_only)
+void process_data_samples_numa(struct bst_node **rootpp,
+			       unsigned long total,
+			       bool balancer_mode,
+			       bool user_space_only)
 {
         int i, j, k, node, target_node;
         unsigned long count;

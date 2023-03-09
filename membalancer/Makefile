@@ -13,8 +13,10 @@ BIN_TRACER := ${MODULE}_tracer.o
 BIN_TRACER := ${MODULE}_tracer.o
 BIN_UTILS := ${MODULE}_utils.o
 BIN_MIGRATE := ${MODULE}_migrate.o
+MEMSTATS_USER := memstats_user.o
 HEAP_USER := heap_user.o
 PROCESS_STATS := processtats_user.o
+IPROFILER := iprofiler.o
 GETPADDR:= getpaddr.o
 LIBS  := ${LIBBPF}/src/libbpf.so -lz -lelf -lnuma -lpthread
 DEFS = -DMEMBALANCE_FORK
@@ -51,8 +53,8 @@ CLANG_FLAGS = -I. \
 
 all:   $(BIN_KERN) \
        ${BIN_TRACER} ${BIN_NUMA} ${BIN_UTILS} ${BIN_TIER} ${HEAP_USER} \
-       ${PROCESS_STATS} ${HEAP} ${BIN_MIGRATE} ${GETPADDR} ${BIN_USER} \
-       ${HEAP} ${GETPADDR} ${BIN_USER}
+       ${PROCESS_STATS} ${HEAP} ${BIN_MIGRATE} ${GETPADDR} \
+       ${MEMSTATS_USER} ${IPROFILER} ${BIN_USER}
 
 %_kernel.o: %_kernel.c
 	$(CLANG) $(CLANG_FLAGS) -c $< -o - -Wall| \
@@ -60,6 +62,10 @@ all:   $(BIN_KERN) \
 
 getpaddr.o: getpaddr.c
 	$(CLANG) -c $<  ${USR_INCLUDE}
+iprofiler.o: iprofiler.c
+	$(CLANG) -c $<  ${USR_INCLUDE} -mcmodel=large
+memstats_user.o: memstats_user.c
+	$(CLANG) -c $<  ${USR_INCLUDE} -mcmodel=large
 processtats_user.o: processtats_user.c
 	$(CLANG) -c $<  ${USR_INCLUDE} -mcmodel=large
 %_numa.o: %_numa.c
@@ -69,7 +75,7 @@ processtats_user.o: processtats_user.c
 %_tracer.o: %_tracer.c
 	$(CLANG) -c $<  ${USR_INCLUDE} -mcmodel=large
 %_utils.o: %_utils.c
-	$(CLANG) -c $<  ${USR_INCLUDE}
+	$(CLANG) -c $<  ${USR_INCLUDE} -mcmodel=large
 %_migrate.o: %_migrate.c
 	$(CLANG) -c $<  ${USR_INCLUDE}
 heap_user.o: heap_user.c
@@ -82,6 +88,8 @@ heap_user.o: heap_user.c
 	./membalancer_tracer.o \
 	./membalancer_utils.o \
 	./membalancer_migrate.o \
+	./iprofiler.o \
+	./memstats_user.o \
 	./getpaddr.o \
 	./heap_user.o \
 	./processtats_user.o \

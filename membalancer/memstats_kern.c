@@ -45,49 +45,18 @@ struct {
 	__uint(max_entries, MAX_IBS_SAMPLES);
 } ibs_op_map SEC(".maps");
 
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, u64);
-	__type(value, struct value_latency);
-	__uint(max_entries, MAX_IBS_SAMPLES);
-} latency_map SEC(".maps");
-
-#define INC_COUNTER(counts, node, i) \
-	if (node == i)  {    \
-		ATOMIC_INC(&counts[i]); \
-		return;      \
-	}
-
-#define INC_COUNTERS(counts, node, base) \
-	INC_COUNTER(counts, node, 0 + (base));\
-	INC_COUNTER(counts, node, 1 + (base));\
-	INC_COUNTER(counts, node, 2 + (base));\
-	INC_COUNTER(counts, node, 3 + (base));\
-	INC_COUNTER(counts, node, 4 + (base));\
-	INC_COUNTER(counts, node, 5 + (base));\
-	INC_COUNTER(counts, node, 6 + (base));\
-	INC_COUNTER(counts, node, 7 + (base));
-
-#define RESOURCE_COUNTERS_PER_ITER 8
-
 static void inc_resource_usage(const int node,
 					volatile u32 counts[MAX_NUMA_NODES])
 {
-	int i;
-	_Static_assert(MAX_NUMA_NODES == 64, "MAX_NUMA_NODES != 64");
-	_Static_assert(RESOURCE_COUNTERS_PER_ITER == 8,
-		"RESOURCE_COUNTERS_PER_ITER != 8");
-	_Static_assert(RESOURCE_COUNTERS_PER_ITER <= MAX_NUMA_NODES,
-		"RESOURCE_COUNTERS_PER_ITER > MAX_NUMA_NODES");
-
 	if (!VALID_NODE(node))
 		return;
 
-	for (i = 0; i < (MAX_NUMA_NODES / RESOURCE_COUNTERS_PER_ITER); i++) {
-		if ((node / RESOURCE_COUNTERS_PER_ITER) == i) {
-			INC_COUNTERS(counts, node, i * RESOURCE_COUNTERS_PER_ITER);
-		}
-	}
+	/*
+	 * TODO: Handle atomicity issue.
+	 * ATOMIC_INC which is the right primitive here which eBPF verifier
+	 * does not accept. Workaround for now until its replacement comes.
+	 */
+	ATOMIC_SET(&counts[node], ATOMIC_READ(&counts[node]) + 1);
 }
 
 static void save_node_usage(volatile u32 counts[MAX_NUMA_NODES])
@@ -107,48 +76,16 @@ static void save_node_usage(volatile u32 counts[MAX_NUMA_NODES])
 	 */
 
 	/*
-	ATOMIC_INC(&counts[*nodep]);
+	ATOMIC_INC(&counts[node]);
 	*/
 	inc_resource_usage(node, counts);
 
 	return;
 }
 
-static inline void save_latency(u32 lat, u64 key, bool op, int idx)
+static void save_fetch_latency(u64 reg, struct value_fetch *valuep)
 {
-	unsigned int i;
-	struct value_latency *valuep;
-
-	valuep = bpf_map_lookup_elem(&latency_map, &key);
-	if (valuep) {
-		idx = ATOMIC_READ(&valuep->idx);
-		if (idx >= MAX_LATENCY_IDX)
-			return;
-
-		for (i = 0; i < MAX_LATENCY_IDX; i++) {
-			if (i == idx) {
-				ATOMIC_SET(&valuep->latency[i], lat);
-				break;
-			}
-		}
-		ATOMIC_INC(&valuep->idx);
-		return;
-	}
-
-	valuep = get_value_latency();
-	if (!valuep) {
-		char msg[] = "Cannot find value for key %p";
-		bpf_trace_printk(msg, sizeof(msg), key);
-		return;
-	}
-
-	ATOMIC_SET(&valuep->idx, 0);
-	bpf_map_update_elem(&latency_map, &key, valuep, BPF_NOEXIST);
-}
-
-static void save_fetch_latency(u64 reg, u64 addr, int idx)
-{
-	u32 latency;
+	u32 latency, idx;
 
 	if (!latency_stats && !latency_stats_l3miss)
 		return;
@@ -156,14 +93,19 @@ static void save_fetch_latency(u64 reg, u64 addr, int idx)
 	if (latency_stats_l3miss && !IBS_FETCH_LLC_MISS(reg))
 		return;
 
+	idx = ATOMIC_READ(&valuep->count);
+	if (idx >= MAX_LATENCY_IDX)
+		return;
+
 	latency = reg >> 32;
 	latency &= (latency << 16) >> 16;
-	save_latency(latency, addr, false, idx);
+
+	ATOMIC_SET(&valuep->latency[idx], latency);
 }
 
-static void save_op_latency(u64 reg, u64 addr, int idx)
+static void save_op_latency(u64 reg, struct value_op *valuep)
 {
-	u32 latency;
+	u32 latency, idx;
 
 	if (!latency_stats && !latency_stats_l3miss)
 		return;
@@ -171,10 +113,14 @@ static void save_op_latency(u64 reg, u64 addr, int idx)
 	if (latency_stats_l3miss && !IBS_OP_LLC_MISS(reg))
 		return;
 
+	idx = ATOMIC_READ(&valuep->count);
+	if (idx >= MAX_LATENCY_IDX)
+		return;
+
 	latency = reg >> 32;
 	latency &= (latency << 16) >> 16;
 
-	save_latency(latency, addr, true, idx);
+	ATOMIC_SET(&valuep->latency[idx], latency);
 }
 
 static int process_fetch_samples(u64 tgid, struct value_fetch *fetch_data,
@@ -194,8 +140,8 @@ static int process_fetch_samples(u64 tgid, struct value_fetch *fetch_data,
 	valuep = bpf_map_lookup_elem(&ibs_fetch_map, &key);
 	if (valuep) {
 
-		save_fetch_latency(fetch_data->fetch_regs[IBS_FETCH_CTL], key,
-				  ATOMIC_READ(&valuep->count));
+		save_fetch_latency(fetch_data->fetch_regs[IBS_FETCH_CTL],
+				   valuep);
 
 		save_node_usage(valuep->counts);
  		ATOMIC_INC(&valuep->count);
@@ -209,18 +155,20 @@ static int process_fetch_samples(u64 tgid, struct value_fetch *fetch_data,
 		return 0;
 	}
 
-	save_fetch_latency(fetch_data->fetch_regs[IBS_FETCH_CTL], key, 0);
 
 	fetch_data->tgid = tgid;
+	fetch_data->ip   = ip;
 	fetch_data->filler = 0;
 
 	save_node_usage(fetch_data->counts);
-	ATOMIC_SET(&fetch_data->count, 1);
 
 	/* If its is akernel sample or user sample with process id
 	* then record it.
 	*/
 	if ((IBS_KERN_SAMPLE(ip) || fetch_data->tgid)) {
+		save_fetch_latency(fetch_data->fetch_regs[IBS_FETCH_CTL],
+				    fetch_data);
+		ATOMIC_SET(&fetch_data->count, 1);
 		bpf_map_update_elem(&ibs_fetch_map, &key, fetch_data,
 				   BPF_NOEXIST);
 
@@ -248,8 +196,7 @@ static int process_op_samples(u64 tgid, struct value_op *op_data,
 
 	valuep = bpf_map_lookup_elem(&ibs_op_map, &key);
 	if (valuep) {
-		save_op_latency(op_data->op_regs[IBS_OP_DATA3], key,
-				ATOMIC_READ(&valuep->count));
+		save_op_latency(op_data->op_regs[IBS_OP_DATA3], valuep);
 		save_node_usage(valuep->counts);
 		ATOMIC_INC(&valuep->count);
 
@@ -262,20 +209,20 @@ static int process_op_samples(u64 tgid, struct value_op *op_data,
 		return 0;
 	}
 
-	save_op_latency(op_data->op_regs[IBS_OP_DATA3], key, 0);
 
 	op_data->tgid = tgid;
 	op_data->ip = ip;
 	op_data->filler = 0;
 
 	save_node_usage(op_data->counts);
-	ATOMIC_SET(&op_data->count, 1);
 
 	/* If its is akernel sample or user sample with process id
 	* then record it.
 	*/
 	if (op_data->op_regs[IBS_DC_PHYSADDR] != (u64)-1 &&
             (IBS_KERN_SAMPLE(ip) || op_data->tgid)) {
+		save_op_latency(op_data->op_regs[IBS_OP_DATA3], op_data);
+		ATOMIC_SET(&op_data->count, 1);
 		bpf_map_update_elem(&ibs_op_map, &key, op_data, BPF_NOEXIST);
 
 		/* Have dense samples before processing */

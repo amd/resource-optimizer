@@ -959,10 +959,10 @@ static int upgrade_downgrade_ratio(void)
 	return sum_down_pct * 100 / sum_up_pct;
 }
 
-void process_ibs_fetch_samples_tier(struct bst_node **rootpp,
-				    unsigned long total,
-				    bool balancer_mode,
-				    bool user_space_only)
+void process_code_samples_tier(struct bst_node **rootpp,
+			       unsigned long total,
+			       bool balancer_mode,
+			       bool user_space_only)
 {
 	int node;
 	unsigned long pages;
@@ -984,10 +984,10 @@ void process_ibs_fetch_samples_tier(struct bst_node **rootpp,
 				 node, true, &pages);
 }
 
-void process_ibs_op_samples_tier(struct bst_node **rootpp,
-				 unsigned long total,
-				 bool balancer_mode,
-				 bool user_space_only)
+void process_data_samples_tier(struct bst_node **rootpp,
+			       unsigned long total,
+			       bool balancer_mode,
+			       bool user_space_only)
 {
 	int node;
 	unsigned long pages;

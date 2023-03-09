@@ -42,15 +42,17 @@ struct ibs_fetch_sample {
         unsigned long ip;
         unsigned int count;
         unsigned int counts[MAX_NUMA_NODES];
+        unsigned int latency[MAX_LATENCY_IDX];
         unsigned long tgid;
         char  process[PROCESSNAMELEN];
         unsigned long fetch_regs[IBSFETCH_REG_COUNT];
 };
 
 struct ibs_op_sample {
-        unsigned long key;
+        unsigned long ip;
         unsigned int count;
         unsigned int counts[MAX_NUMA_NODES];
+        unsigned int latency[MAX_LATENCY_IDX];
         unsigned long tgid;
         char          process[PROCESSNAMELEN];
         unsigned long op_regs[IBSOP_REG_COUNT];
@@ -107,13 +109,13 @@ int bst_add_page(pid_t pid, int to_node, unsigned long addr,
 int tracer_init(const char *path);
 void update_sample_statistics_tracer(unsigned long *samples,
 				     bool fetch);
-void process_ibs_op_samples_tracer(struct bst_node **rootpp,
-                                   unsigned long total,
-                                   bool user_space_only);
+void process_data_samples_tracer(struct bst_node **rootpp,
+				 unsigned long total,
+				 bool user_space_only);
 
-void process_ibs_fetch_samples_tracer(struct bst_node **rootpp,
-                                    unsigned long total,
-                                    bool user_space_only);
+void process_code_samples_tracer(struct bst_node **rootpp,
+				 unsigned long total,
+				 bool user_space_only);
 void report_tracer_statistics(void);
 void set_base_page_size(unsigned long base_pagesz);
 
@@ -141,6 +143,15 @@ int nodes_at_hop_or_tier(int node, int hop_or_tier, int *countp, int **listpp);
 bool is_tier_mode(void);
 bool is_default_tier_mode(void);
 void set_tier_mode(void);
+int get_code_samples(int fd, __u64 *total_freq, bool defer);
+void cleanup_code_samples(int fd);
+int get_data_samples(int fd, __u64 *total_freq, bool defer);
+void cleanup_data_samples(int fd);
+void profiler_process_samples(int fd_fetch, int fd_op, u64 fetch_cnt,
+			      u64 op_cnt);
+void report_profiler_information(bool summary);
+extern int report_frequency;
+extern int iprofiler;
 
 #define BRIGHT   "\x1b[1m"
 #define MAGENTA  "\x1B[35m"
@@ -158,5 +169,12 @@ void set_tier_mode(void);
 #define BLACK    "\x1B[30m"
 #define BWHITE   "\x1B[47m"
 #define WHITE   "\x1B[37m"
+
+extern unsigned int min_ibs_samples;
+#define MIN_IBS_CLASSIC_SAMPLES 200
+#define MIN_IBS_L3MISS_SAMPLES  200
+#define MIN_IBS_SAMPLES min_ibs_samples
+#define MIN_IBS_FETCH_SAMPLES (MIN_IBS_SAMPLES / 4)
+#define MIN_IBS_OP_SAMPLES    (MIN_IBS_SAMPLES / 2)
 
 #endif

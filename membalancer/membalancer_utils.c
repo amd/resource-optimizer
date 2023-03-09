@@ -176,7 +176,6 @@ unsigned long seconds_elapsed(struct timeval *start, struct timeval *end)
 	return seconds;
 }
 
-
 static double numa_node_loadavg[MAX_NUMA_NODES];
 int idle_cpu_cnt[MAX_NUMA_NODES];
 

@@ -39,13 +39,12 @@ enum {
 };
 
 struct perf_ibs_fetch_data {
-	u32		size;
+	u32 size;
 	union {
 		u32	data[0];	/* data buffer starts here */
 		u32	caps;
 	};
-	
-	u64		regs[IBSFETCH_REG_COUNT];
+	u64 regs[IBSFETCH_REG_COUNT];
 };
 
 enum {
@@ -80,13 +79,16 @@ enum {
 #define MAX_NUMA_NODES 64
 #define KERN_PAGE_OFFSET 0xffff880000000000
 #define IBS_KERN_SAMPLE(ip) (ip > KERN_PAGE_OFFSET)
+#define MAX_LATENCY_IDX 128
 
 struct value_fetch {
 	u64 tgid;
+	u64 ip;
 	u64 fetch_regs[IBSFETCH_REG_COUNT];
 	volatile u32 counts[MAX_NUMA_NODES];
+	volatile u32 latency[MAX_LATENCY_IDX];
 	volatile u32 count;
-	u32 filler;
+	int filler;
 };
 
 struct value_op {
@@ -94,6 +96,7 @@ struct value_op {
 	u64 ip;
 	u64 op_regs[IBSOP_REG_COUNT];
 	volatile u32 counts[MAX_NUMA_NODES];
+	volatile u32 latency[MAX_LATENCY_IDX];
 	volatile u32 count;
 	u32 filler;
 };
