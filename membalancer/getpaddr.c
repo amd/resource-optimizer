@@ -74,4 +74,3 @@ unsigned long get_physaddr(pid_t pid, unsigned long vaddr)
 
 	return -1;
 }
-

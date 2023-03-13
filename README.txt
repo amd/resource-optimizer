@@ -7,14 +7,24 @@ Memory balancer is a prototype tool for balancing memory across multiple tiers o
 For more information such as command lines, the tools needs to be invoked with the option -h.
 
 Major Source Code Files:
-1) membalancer_kernel.c
-Kernel functionality/eBPF hooks for collecting IBS samples
-2) membalancer_user.c
-CLI/user space code for extracting the statistics collected in the kernel, worker threads for implementing memory migrations.
-3) membalancer_tier.c   - Backend code for memory tiering.
-4) membalancer_numa.c   - Backend code for NUMA migrations
-5) membalancer_tracer.c - Backend code for access tracer
-6) membalancer_migrate.c - Backend code for process/thread migrations
+
+1) kernel/amd:
+generic_kern_amd.c : The code that deals with AMD IBS telemetry.
+
+2) kerne/common:
+membalancer_kernel.c : Major file for the kernel eBPF kernel module.
+memstats_kern.c : Housekeeping/statistics for memory migration
+processtats_kern.c: Counters for process migration
+heap_kern.c: Heap/dynamic memory allocation primitives
+
+3) User space
+1) membalancer_user.c : CLI/user space code for extracting the statistics collected in the kernel, worker threads for implementing memory migrations.
+2) membalancer_tier.c   - Backend code for memory tiering.
+3) membalancer_numa.c   - Backend code for NUMA migrations
+4) membalancer_tracer.c - Backend code for access tracer
+5) membalancer_migrate.c - Backend code for process/thread migrations
+6) memstats_user.c    - Code for collecting memory statistics
+7) iprofiler.c        - IBS-based code/data profiler
 
 Scripts:
 1) run.sh - To run the tool in NUMA mode. Whether to balance or just report access pattern is deteremined by the optional second arugment. The first argument is the parent process id (ppid). It generates a single page output.
@@ -40,6 +50,12 @@ Build Information:
 
 A note on external dependencies: To build memory balancer tool, it requires libbpf to be downloaded from https://github.com/libbpf/libbpf. The location of libbpf needs to be mentioned in the Makefile via the variable LIBBPF. The location of kernel source code also needs to be mentioned via the variable KDIR.
 
-To build memory balancer, the command needs to be run is "make".
+To build kernel module:
+cd kernel/common
+make 
+
+To build memory balancer:
+cd common
+make
 
 Currently the kernel part of the tool has a hard dependency with Linux kernel code. This is due to the absence of a eBPF kernel API to get parent process identifier which is required for balancing memory of progress-like multi-process application which creates processes on demand. This hard dependency maybe relaxed in future.

@@ -20,7 +20,7 @@
 
 #ifndef _MEMBALANCER_H_
 #define _MEMBALANCER_H_ 
-#include "../kernel/generic_kern_amd.h"
+#include "generic_kern_amd.h"
 
 #define MAX_IBS_SAMPLES	(64 * 1024)
 #define PROCESSNAMELEN 32

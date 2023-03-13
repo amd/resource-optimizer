@@ -2,11 +2,8 @@ KDIR ?= <..>/linux-5.19
 LIBBPF = <..>/libbpf
 CLANG ?= clang
 LLC ?= llc
-ARCH := $(subst x86_64,x86,$(shell arch))
 MODULE   := membalancer
-BIN_KERN := ${MODULE}_kernel.o
 BIN_USER := ${MODULE}_user.o
-BIN_LOAD := bpf_load.o
 BIN_NUMA := ${MODULE}_numa.o
 BIN_TIER := ${MODULE}_tier.o
 BIN_TRACER := ${MODULE}_tracer.o
@@ -28,37 +25,13 @@ USR_INCLUDE := -I. \
 	-I${KDIR}/tools/lib \
 	-I${KDIR}/tools/testing/selftests/bpf/ \
 	-I${LIBBPF}/src \
-	-I${LIBBPF}/include
+	-I${LIBBPF}/include \
+	-I../include/common/ \
+	-I../include/amd \
 
-CLANG_FLAGS = -I. \
-	-include $(KDIR)/include/linux/kconfig.h \
-	-I../kernel \
-	-I$(KDIR)/include \
-	-I$(KDIR)/tools/lib \
-	-I$(KDIR)/include/uapi \
-	-I$(KDIR)/include/generated/uapi \
-	-I$(KDIR)/arch/$(ARCH)/include \
-	-I$(KDIR)/arch/$(ARCH)/include/generated \
-	-I$(KDIR)/arch/$(ARCH)/include/uapi \
-	-I$(KDIR)/arch/$(ARCH)/include/generated/uapi \
-	-I$(KDIR)/tools/testing/selftests/bpf/ \
-	-I${LIBBPF}/src \
-	-D__KERNEL__ -D__BPF_TRACING__ -Wno-unused-value -Wno-pointer-sign \
-	-DCC_USING_FENTRY \
-	-D__TARGET_ARCH_$(ARCH) -Wno-compare-distinct-pointer-types \
-	-Wno-gnu-variable-sized-type-not-at-end \
-	-Wno-address-of-packed-member -Wno-tautological-compare \
-	-Wno-unknown-warning-option  \
-	-g -O2 -emit-llvm
-
-all:   $(BIN_KERN) \
-       ${BIN_TRACER} ${BIN_NUMA} ${BIN_UTILS} ${BIN_TIER} ${HEAP_USER} \
+all:   ${BIN_TRACER} ${BIN_NUMA} ${BIN_UTILS} ${BIN_TIER} ${HEAP_USER} \
        ${PROCESS_STATS} ${HEAP} ${BIN_MIGRATE} ${GETPADDR} \
        ${MEMSTATS_USER} ${IPROFILER} ${BIN_USER}
-
-%_kernel.o: %_kernel.c
-	$(CLANG) $(CLANG_FLAGS) -c $< -o - -Wall| \
-		$(LLC) -march=bpf -mcpu=$(CPU) -filetype=obj -o $@
 
 getpaddr.o: getpaddr.c
 	$(CLANG) -c $<  ${USR_INCLUDE}

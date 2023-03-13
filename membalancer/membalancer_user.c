@@ -87,7 +87,7 @@ unsigned int min_ibs_samples = MIN_IBS_CLASSIC_SAMPLES;
 static int migration_timeout_sec = 60;
 static int min_migrated_pages = MIN_MIGRATED_PAGES;
 
-static char cmd_args[]  = "c:f:F:P:p:r:m:M:v:U:T:t:D:L:B:I:uhcbHVlS::";
+static char cmd_args[]  = "c:f:F:P:p:r:m:M:o:v:U:T:t:D:L:B:I:uhcbHVlS::";
 static int ibs_fetch_device = -1;
 static int ibs_op_device    = -1;
 #define FETCH_CONFIG        57
@@ -106,6 +106,7 @@ static u32 sampling_interval_cnt = 100;
 static u32 sampling_iter;
 bool proc_data_sampling_done = false;
 u32 curr_proc_data_map_idx;
+static char * ebpf_object_dir = "../kernel/common/";
 
 static int min_freemem_pct = 10;
 
@@ -199,6 +200,8 @@ static void usage(const char *cmd)
 			"to perform migraitons to it\n");
 	printf("       -I <n>  runs in the profiler mode, reports up to "
 			"n top most samples of instruction and data\n");
+	printf("       -o <eBPF kernel module location, default is ");
+	printf("../kern/common\n");
 	printf("       <duration> Interval in milliseconds, "
 	       "default %d\n", MEMB_INTVL);
 
@@ -1826,7 +1829,8 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 		goto cleanup;
 	}
 
-	snprintf(filename, sizeof(filename), "%s_kernel.o", kernobj);
+	snprintf(filename, sizeof(filename), "%s/%s_kernel.o",
+		 ebpf_object_dir, kernobj);
 	obj = bpf_object__open_file(filename, NULL);
 	if (libbpf_get_error(obj)) {
 		fprintf(stderr, "ERROR: opening BPF object file failed\n");
@@ -2302,6 +2306,9 @@ int main(int argc, char **argv)
 			break;
 		case 'L':
 			trace_dir = optarg;
+			break;
+		case 'o':
+			ebpf_object_dir = optarg;
 			break;
 		case 'S':
 			tuning_mode = get_balancing_mode(argv[optind++]);

@@ -285,7 +285,7 @@ static bool valid_pid(pid_t pid)
 	return valid_pid_with_task(pid, NULL);
 }
 
-#include "../kernel/generic_kern_amd.c"
+#include "../amd/generic_kern_amd.c"
 #include "memstats_kern.c"
 #include "processtats_kern.c"
 #include "heap_kern.c"
