@@ -76,4 +76,3 @@ struct value_fetch * alloc_value_fetch(void)
 	key = bpf_get_smp_processor_id();
 	return bpf_map_lookup_elem(&per_cpu_value_fetch, &key);
 }
-

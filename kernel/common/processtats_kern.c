@@ -30,7 +30,6 @@
 #include "membalancer_common.h"
 #include "membalancer_pvt.h"
 
-static struct numa_range numa_ranges[MAX_NUMA_NODES];
 static int max_num_ranges;
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -48,17 +47,37 @@ struct {
 
 static int memory_node_get(u64 address)
 {
-	int i;
+	int left, right, key, mid, i;
+	struct numa_range *range;
 	u64 pfn = address >> PAGE_SHIFT;
 
+	left = 0;
+	right = max_num_ranges - 1;
+
+	/*
+	 * Fixed for loop is to avoid validation failure by eBPF verifier which
+	 * likes only finite loops.
+	 */
 	for (i = 0; i < MAX_NUMA_NODES; i++) {
-		if (numa_ranges[i].first_pfn == (u64)-1)
+		if (left < 0 || right >= max_num_ranges || left > right)
 			break;
 
-		if ((pfn >= numa_ranges[i].first_pfn) &&
-			(pfn < numa_ranges[i].last_pfn)) {
-			return i;
-		}
+		mid = (left + right) / 2;
+
+		key = mid;
+		range = bpf_map_lookup_elem(&numa_address_range, &key);
+		if (!range)
+			break;
+
+		if ((pfn >= range->first_pfn) &&
+			(pfn < range->last_pfn))
+			return range->node;
+
+		if (pfn < range->first_pfn)
+			right = mid - 1;
+
+		if (pfn > range->first_pfn)
+			left = mid + 1;
 	}
 
 	return -1;
@@ -75,25 +94,6 @@ static void load_numa_ranges(void)
 		if (!range)
 			break;
 
-		numa_ranges[i].first_pfn = range->first_pfn;
-		numa_ranges[i].last_pfn  = range->last_pfn;
-		numa_ranges[i].node      = range->node;
-		numa_ranges[i].tier      = range->tier;
-
-		if (kern_verbose >= 5) {
-			char msg[] = "PFN %lx-%lx node_tier %x";
-			bpf_trace_printk(msg, sizeof(msg),
-					(unsigned long)range->first_pfn,
-					(unsigned long)range->last_pfn,
-					range->node << 16 | range->tier);
-
-		}
-		bpf_map_delete_elem(&numa_address_range, &key);
-	}
-
-	if (i < MAX_NUMA_NODES - 1) {
-		numa_ranges[i].first_pfn =  (u64)-1;
-		numa_ranges[i].last_pfn  =  (u64)-1;
 	}
 
 	max_num_ranges = i;
@@ -110,7 +110,7 @@ static void update_process_statistics(u64 tgid, u64 address, bool fetch)
 		return;
 
 	mem_node = memory_node_get(address);
-	if (mem_node < 0)
+	if (VALID_NODE(mem_node) == 0)
 		return;
 
 	statsp = bpf_map_lookup_elem(&process_stats_map, &curr_tgid);

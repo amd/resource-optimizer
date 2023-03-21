@@ -1,5 +1,5 @@
 /*
- * membalancer_utils.h - Process samples from IBS or software sample
+ * membalancer_user.h - Process samples from IBS or software sample
  * and analyze the instruction and data (if available) samples.
  *
  * Copyright (c) 2015 The Libbpf Authors. All rights reserved.
