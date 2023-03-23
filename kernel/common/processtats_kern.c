@@ -59,10 +59,16 @@ static int memory_node_get(u64 address)
 	 * likes only finite loops.
 	 */
 	for (i = 0; i < MAX_NUMA_NODES; i++) {
-		if (left < 0 || right >= max_num_ranges || left > right)
+		if (left > right)
 			break;
 
-		mid = (left + right) / 2;
+		/*
+		 * To circumvent LLVM error "Unsupportied signed division.",
+		 * a right shift is performed instead of dividing by 2.
+		 */
+		mid = (left + right) >> 1;
+		if (mid < 0 || mid >= max_num_ranges)
+			break;
 
 		key = mid;
 		range = bpf_map_lookup_elem(&numa_address_range, &key);
