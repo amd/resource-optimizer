@@ -36,6 +36,7 @@
 #include<stdbool.h>
 #include<sys/types.h>
 
+#include "thread_pool.h"
 #include "membalancer_common.h"
 
 struct ibs_fetch_sample {
@@ -63,6 +64,7 @@ struct ibs_op_sample {
 #define migration_throttle_limit 10
 extern int idle_cpu_cnt[MAX_NUMA_NODES];
 extern int nr_cpus;
+extern threadpool_t tp;
 
 struct cpu_utilinfo {
 	int cpu;
@@ -84,7 +86,7 @@ enum {
 		MAX_FIELDS,
 };
 
-int update_node_loadavg(void);
+void update_node_loadavg(void *);
 int get_node_loadavg(int node);
 
 extern bool histogram_format;

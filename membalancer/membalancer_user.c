@@ -64,6 +64,7 @@
 #include "membalancer_migrate.h"
 #include "heap_user.h"
 #include "membalancer_user.h"
+#include "thread_pool.h"
 
 #define MEMB_CLOCK 25
 #define MEMB_INTVL 100
@@ -74,6 +75,7 @@ int nr_cpus;
 static double min_pct = 0.01;
 static bool user_space_only = false;
 int verbose = 2;
+int timer_clock = 1;
 
 bool do_migration = false;
 enum tuning_mode tuning_mode = MEMORY_MOVE;
@@ -87,7 +89,7 @@ unsigned int min_ibs_samples = MIN_IBS_CLASSIC_SAMPLES;
 static int migration_timeout_sec = 60;
 static int min_migrated_pages = MIN_MIGRATED_PAGES;
 
-static char cmd_args[]  = "c:f:F:P:p:r:m:M:o:v:U:T:t:D:L:B:I:uhcbHVlS::";
+static char cmd_args[]  = "c:f:F:P:p:r:m:M:o:v:U:T:t:D:L:B:i:I:uhcbHVlS::";
 static int ibs_fetch_device = -1;
 static int ibs_op_device    = -1;
 #define FETCH_CONFIG        57
@@ -118,6 +120,9 @@ atomic64_t fetch_cnt, op_cnt, pages_migrated;
 #define PAGES_PER_CALL 32
 #define MAX_PAGES_PER_CALL 65536
 #define PAGE_MOVERS 8
+#define IBS_SAMPLE_WORKERS 1
+
+#define THREAD_COUNT (PAGE_MOVERS + IBS_SAMPLE_WORKERS + 2)
 
 struct page_list {
 	struct page_list *next;
@@ -147,7 +152,6 @@ struct ibs_sample_worker {
 	int worker;
 };
 
-#define IBS_SAMPLE_WORKERS 1
 
 static struct page_mover page_mover[PAGE_MOVERS];
 static struct ibs_sample_worker ibs_worker[IBS_SAMPLE_WORKERS];
@@ -1369,19 +1373,6 @@ static void process_samples(int *map_fd, int msecs, int fetch)
 		atomic64_sub(&ibs_pending_op_samples, op_cnt);
 	}
 
-	if (do_migration && !(tuning_mode & MEMORY_MOVE)) {
-		if (update_node_loadavg() != 0) {
-			fprintf(stderr, "Cannot load per-node cpu "
-			        "load average information\n");
-			return;
-		}
-	}
-
-	if (update_per_node_freemem() != 0) {
-		fprintf(stderr, "Cannot load per-node freemem information\n");
-		return;
-	}
-
 	if (tuning_mode == PROCESS_MOVE) {
 		if ((fetch_cnt >= MIN_IBS_FETCH_SAMPLES) ||
 			(op_cnt >= MIN_IBS_OP_SAMPLES))
@@ -1810,6 +1801,9 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 	unsigned long ibs_samples_old = 0, pages_migrated_old = 0;
 	enum tuning_mode tuning_mode_old = tuning_mode;
 	struct timeval start;
+	threadpool_t threadpool;
+
+	memset(&threadpool, 0, sizeof(threadpool_t));
 
 	fetch_links = calloc(nr_cpus, sizeof(struct bpf_link *));
 	if (!fetch_links) {
@@ -1929,14 +1923,12 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 		goto cleanup;
 
 	err = parse_additional_bpf_programs(obj);
-	if (err) {
+	if (err)
 		goto cleanup;
-	}
-	
+
 	err = launch_additional_bpf_programs();
-	if (err) {
+	if (err)
 		goto cleanup;
-	}
 
 	printf("\f");
 	printf("%s%s", BRIGHT, BMAGENTA);
@@ -1963,8 +1955,11 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 	signal(SIGINT, interrupt_signal);
 	gettimeofday(&start, NULL);
 
-	while (!err) {
+	err = threadpool_create(&threadpool, THREAD_COUNT);
+	if (err)
+		goto cleanup;
 
+	while (!err) {
 		if (tuning_mode_old != tuning_mode) {
 			/* There is change in tuning_mode value;
 			 * due to MEMORY_MOVE set with AUTOTUNE after
@@ -2086,6 +2081,16 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 						 fetch_cnt, op_cnt);
 			report_profiler_information(false);
 		} else {
+
+			if (do_migration && !(tuning_mode & MEMORY_MOVE)) {
+				err = threadpool_add_work(&threadpool, update_node_loadavg, NULL);
+				if (err)
+					goto cleanup;
+			}
+			err = threadpool_add_work(&threadpool, update_per_node_freemem, NULL);
+			if (err)
+				goto cleanup;
+
 			ibs_process_samples(ibs_worker, fetch_cnt, op_cnt);
 		}
 
@@ -2106,6 +2111,7 @@ cleanup:
 	free(op_links);
 	free(perf_links);
 	bpf_object__close(obj);
+	threadpool_destroy(&threadpool);
 
 	return err;
 }
@@ -2325,6 +2331,9 @@ int main(int argc, char **argv)
 						sampling_interval_cnt = sampling_count;
 				}
 			}
+			break;
+		case 'i':
+			timer_clock = atoi(optarg);
 			break;
 		default:
 			usage(argv[0]);

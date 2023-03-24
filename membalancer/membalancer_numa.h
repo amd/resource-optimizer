@@ -97,7 +97,7 @@ void process_data_samples_tier(struct bst_node **rootpp,
 			       bool balancer_mode,
 			       bool user_space_only);
 int node_freemem_get(int node);
-int update_per_node_freemem(void);
+void update_per_node_freemem(void *arg);
 extern int max_nodes;
 extern int verbose;
 #endif

@@ -33,9 +33,15 @@
 #include<stdio.h>
 #include<stdlib.h>
 #include<unistd.h>
-#include <assert.h>
-#include <errno.h>
+#include<assert.h>
+#include<errno.h>
+#include<pthread.h>
+#include<limits.h>
+#include<stdatomic.h>
+#include<time.h>
+#include<signal.h>
 
+#include "thread_pool.h"
 #include "membalancer_utils.h"
 #include "membalancer_numa.h"
 
@@ -48,8 +54,23 @@ enum {
 	MAX_VENDOR_ID,
 };
 
-typedef uint8_t cpu_vendor_t[VENDOR_ID_LEN];
+extern int timer_clock;
+static struct cpu_utilinfo snap1[MAX_CPU_CORES];
+static struct cpu_utilinfo snap2[MAX_CPU_CORES];
 
+static void cpu_loadavg(union sigval timer_data);
+
+typedef struct sigevent sigevent_t;
+typedef struct itimerspec itimerspec_t;
+typedef struct event_data {
+	sigevent_t		sev;
+	timer_t			timer_id;
+	itimerspec_t	its;
+} event_data_t;
+
+typedef uint8_t cpu_vendor_t[VENDOR_ID_LEN];
+static atomic_int pending_cpuload_cal;
+static atomic_int error_status; /* thread error status */
 /*
  * Currently supporting only with AMD CPUS
  * TODO add list of supported cpu vendors
@@ -218,29 +239,49 @@ static int get_cpu_util(struct cpu_utilinfo *cpuutil)
 	return 0;
 }
 
-/*
- * TODO make update_node_loadavg atomic for parallel
- * update and consumption.
- */
-int update_node_loadavg(void)
+static int start_timer(void)
 {
-	struct cpu_utilinfo snap1[MAX_CPU_CORES] = { 0 };
-	struct cpu_utilinfo snap2[MAX_CPU_CORES] = { 0 };
-	int node;
 	int err;
+	event_data_t *event_data = (event_data_t *)malloc(sizeof(event_data_t));
+	memset(event_data, 0, sizeof(event_data_t));
 
-	err = get_cpu_util(snap1);
-	if (err)
+	event_data->sev.sigev_notify = SIGEV_THREAD;
+	event_data->sev.sigev_notify_function = &cpu_loadavg;
+	event_data->sev.sigev_value.sival_ptr = event_data;
+
+	event_data->its.it_value.tv_sec  = timer_clock;
+
+	/* create timer */
+	err = timer_create(CLOCK_REALTIME, &event_data->sev, &event_data->timer_id);
+	if (err != 0) return err;
+
+	/* start timer */
+	err = timer_settime(event_data->timer_id, 0, &event_data->its, NULL);
+	if (err != 0)
+	{
+		timer_delete(event_data->timer_id);
+		free(event_data);
 		return err;
-	sleep(1);
+	}
+
+	return 0;
+}
+
+static void cpu_loadavg(union sigval timer_data)
+{
+	int err, cpu, i, node;
+	event_data_t *event_data = (event_data_t *)timer_data.sival_ptr;
+	timer_t timer_id = event_data->timer_id;
+
+	memset(snap2, 0, MAX_CPU_CORES * sizeof(struct cpu_utilinfo));
+
 	err = get_cpu_util(snap2);
-	if (err)
-		return err;
+	if (err) {
+		atomic_store(&error_status, 1);
+		return;
+	}
 
-	memset(idle_cpu_cnt, 0, MAX_NUMA_NODES * sizeof(int));
-	memset(numa_node_loadavg, 0, MAX_NUMA_NODES * sizeof(double));
-
-	for (int cpu = 0; cpu < MAX_CPU_CORES; cpu++ ) {
+	for (cpu = 0; cpu < MAX_CPU_CORES; cpu++ ) {
 		if (numa_cpu[cpu] == -1)
 			continue;
 
@@ -254,7 +295,7 @@ int update_node_loadavg(void)
 			idle_cpu_cnt[node]++;
 	}
 
-	for (int i = 0; i < max_nodes; i++) {
+	for (i = 0; i < max_nodes; i++) {
 		if (!numa_node_cpu[i].cpu_cnt) {
 			/* Node without CPU */
 			numa_node_loadavg[i] = 100;
@@ -267,10 +308,43 @@ int update_node_loadavg(void)
 		 */
 		idle_cpu_cnt[i] /= migration_throttle_limit;
 	}
-	return 0;
+	atomic_store(&pending_cpuload_cal, 0);
+	timer_delete(timer_id);
+	free(event_data);
+
+	return;
+}
+
+void update_node_loadavg(void *arg)
+{
+	int err;
+
+	atomic_init(&pending_cpuload_cal, 1);
+	atomic_init(&error_status, 0);
+	memset(snap1, 0, MAX_CPU_CORES * sizeof(struct cpu_utilinfo));
+	memset(idle_cpu_cnt, 0, MAX_NUMA_NODES * sizeof(int));
+	memset(numa_node_loadavg, 0, MAX_NUMA_NODES * sizeof(double));
+
+	err = get_cpu_util(snap1);
+	if (err) {
+		atomic_store(&error_status, 1);
+		return;
+	}
+
+	err = start_timer();
+	if (err)
+		atomic_store(&error_status, 1);
 }
 
 int get_node_loadavg(int node)
 {
+	if(atomic_load(&pending_cpuload_cal) &&
+			!atomic_load(&error_status)) {
+		usleep(100 * 1000);
+		if(atomic_load(&pending_cpuload_cal) ||
+				atomic_load(&error_status))
+			return INT_MAX;
+	}
+
 	return numa_node_loadavg[node];
 }

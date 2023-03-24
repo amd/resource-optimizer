@@ -12,6 +12,7 @@ BIN_UTILS := ${MODULE}_utils.o
 BIN_MIGRATE := ${MODULE}_migrate.o
 MEMSTATS_USER := memstats_user.o
 HEAP_USER := heap_user.o
+TPOOL := thread_pool.o
 PROCESS_STATS := processtats_user.o
 IPROFILER := iprofiler.o
 GETPADDR:= getpaddr.o
@@ -30,7 +31,7 @@ USR_INCLUDE := -I. \
 	-I../include/amd \
 
 all:   ${BIN_TRACER} ${BIN_NUMA} ${BIN_UTILS} ${BIN_TIER} ${HEAP_USER} \
-       ${PROCESS_STATS} ${HEAP} ${BIN_MIGRATE} ${GETPADDR} \
+       ${PROCESS_STATS} ${HEAP} ${BIN_MIGRATE} ${GETPADDR} ${TPOOL}\
        ${MEMSTATS_USER} ${IPROFILER} ${BIN_USER}
 
 getpaddr.o: getpaddr.c
@@ -53,6 +54,8 @@ processtats_user.o: processtats_user.c
 	$(CLANG) -c $<  ${USR_INCLUDE}
 heap_user.o: heap_user.c
 	$(CLANG) -c $<  ${USR_INCLUDE}
+thread_pool.o: thread_pool.c
+	$(CLANG) -c $<  ${USR_INCLUDE} -mcmodel=large
 
 %_user.o: %_user.c
 	$(CLANG) \
@@ -66,6 +69,7 @@ heap_user.o: heap_user.c
 	./getpaddr.o \
 	./heap_user.o \
 	./processtats_user.o \
+	./thread_pool.o \
 	$<  ${USR_INCLUDE} -o ${MODULE} \
 	${LIBS} ${DEFS} -Wall -mcmodel=large
 clean:

@@ -40,10 +40,16 @@
 #include <numaif.h>
 #include <stdbool.h>
 #include <sys/param.h>
+#include <pthread.h>
+#include <stdatomic.h>
 
 #include "membalancer_common.h"
 #include "membalancer_utils.h"
 #include "membalancer_numa.h"
+
+
+static atomic_int pending_freemem_cal;
+static atomic_int error_status;  /* thread error status */
 
 int max_nodes;
 struct numa_node_mem numa_table[MAX_NUMA_NODES];
@@ -57,220 +63,220 @@ static unsigned long op_overall_samples[MAX_NUMA_NODES];
 
 static int init_numa_node(void **fpout)
 {
-        FILE *fp;
-        char buffer[1024];
-        int i;
+	FILE *fp;
+	char buffer[1024];
+	int i;
 
-        fp = popen("/usr/bin/cat /proc/zoneinfo|/usr/bin/grep start_pfn", "r");
-        i = 0;
-        while (fgets(buffer, sizeof(buffer) - 1, fp)) {
-                if (i++ >= 1)
-                        break;
+	fp = popen("/usr/bin/cat /proc/zoneinfo|/usr/bin/grep start_pfn", "r");
+	i = 0;
+	while (fgets(buffer, sizeof(buffer) - 1, fp)) {
+		if (i++ >= 1)
+			break;
 
-        }
+	}
 
-        *fpout = fp;
+	*fpout = fp;
 
-        return 0;
+	return 0;
 }
 
 static void deinit_numa_node(void *handle)
 {
-        FILE *fp = handle;
+	FILE *fp = handle;
 
-        fclose(fp);
+	fclose(fp);
 }
 
 static int get_next_numa_distance(char **distance)
 {
-        int i, val;
-        char *dist = *distance;
+	int i, val;
+	char *dist = *distance;
 
-        i = 0;
-        while (dist[i] != 0 && dist[i] != ' ')
-                i++;
+	i = 0;
+	while (dist[i] != 0 && dist[i] != ' ')
+		i++;
 
-        if (dist[i] == ' ')
-                *distance = &dist[++i];
-        else
-                *distance = NULL;
+	if (dist[i] == ' ')
+		*distance = &dist[++i];
+	else
+		*distance = NULL;
 
-        val  = atoi(&dist[0]);
+	val  = atoi(&dist[0]);
 
-        return  val;
+	return  val;
 }
 
 static int fill_numa_distances_for_node(int node)
 {
-        int fd, i, val;
-        char path[1024];
-        char buffer[1024];
-        ssize_t bytes;
-        char *bufferp;
+	int fd, i, val;
+	char path[1024];
+	char buffer[1024];
+	ssize_t bytes;
+	char *bufferp;
 
-        snprintf(path, sizeof(path), "%s/node%d/distance",
-                NUMA_NODE_INFO, node);
+	snprintf(path, sizeof(path), "%s/node%d/distance",
+			NUMA_NODE_INFO, node);
 
-        fd = open(path, O_RDONLY);
-        if (fd < 0)
-                return -1;
+	fd = open(path, O_RDONLY);
+	if (fd < 0)
+		return -1;
 
-        bytes = read(fd,  buffer, sizeof(buffer));
-        close(fd);
+	bytes = read(fd,  buffer, sizeof(buffer));
+	close(fd);
 
-        bufferp = buffer;
-        if (bytes <= 0)
-                return -1;
-        i = 0;
-        while (bufferp) {
-                val = get_next_numa_distance(&bufferp);
-                numa_table[node].distance[i++] = val;
-        }
+	bufferp = buffer;
+	if (bytes <= 0)
+		return -1;
+	i = 0;
+	while (bufferp) {
+		val = get_next_numa_distance(&bufferp);
+		numa_table[node].distance[i++] = val;
+	}
 
-        return 0;
+	return 0;
 }
 
 static unsigned long numa_node_next(void *handle)
 {
-        FILE *fp;
-        char buffer[1024];
-        char *value;
+	FILE *fp;
+	char buffer[1024];
+	char *value;
 
-        fp = handle;
-        if (!fgets(buffer, 1024, fp))
-                return (unsigned long)-1;
+	fp = handle;
+	if (!fgets(buffer, 1024, fp))
+		return (unsigned long)-1;
 
-        value = strchr(buffer, ':');
-        value++;
+	value = strchr(buffer, ':');
+	value++;
 
-        while (*value != 0 && *value == ' ')
-                value++;
+	while (*value != 0 && *value == ' ')
+		value++;
 
-        if (*value == 0)
-                return (unsigned long)-1;
+	if (*value == 0)
+		return (unsigned long)-1;
 
-        return atol(value);
+	return atol(value);
 }
 
 static int fill_numa_distances(void)
 {
-        int i, err;
+	int i, err;
 
-        for (i = 0; i < max_nodes; i++) {
-                err = fill_numa_distances_for_node(i);
-                if (err)
-                        return err;
-        }
+	for (i = 0; i < max_nodes; i++) {
+		err = fill_numa_distances_for_node(i);
+		if (err)
+			return err;
+	}
 
-        return 0;
+	return 0;
 }
 
 
 int fill_numa_table(void)
 {
-        void *handle;
-        int err;
-        int i, j, node = 0;
-        unsigned long value, last_pfn;
+	void *handle;
+	int err;
+	int i, j, node = 0;
+	unsigned long value, last_pfn;
 
-        err = init_numa_node(&handle);
-        if (err)
-                return err;
+	err = init_numa_node(&handle);
+	if (err)
+		return err;
 
-        while ((value = numa_node_next(handle)) != -1) {
-                numa_table[max_nodes].node = node++;
-                numa_table[max_nodes].tierno = -1;
-                numa_table[max_nodes].first_pfn = value;
-                last_pfn  = value;
-                last_pfn += (numa_node_size(max_nodes, NULL) / PAGE_SIZE);
-                numa_table[max_nodes++].last_pfn = last_pfn;
-                assert(last_pfn > numa_table[max_nodes].first_pfn);
+	while ((value = numa_node_next(handle)) != -1) {
+		numa_table[max_nodes].node = node++;
+		numa_table[max_nodes].tierno = -1;
+		numa_table[max_nodes].first_pfn = value;
+		last_pfn  = value;
+		last_pfn += (numa_node_size(max_nodes, NULL) / PAGE_SIZE);
+		numa_table[max_nodes++].last_pfn = last_pfn;
+		assert(last_pfn > numa_table[max_nodes].first_pfn);
 
-        }
+	}
 
-        deinit_numa_node(handle);
-        fill_numa_distances();
-        for (i = 0; i < max_nodes; i++) {
-                printf("numa.%d ", i);
-                for (j = 0; j < max_nodes; j++)
-                        printf("%d ", numa_table[i].distance[j]);
+	deinit_numa_node(handle);
+	fill_numa_distances();
+	for (i = 0; i < max_nodes; i++) {
+		printf("numa.%d ", i);
+		for (j = 0; j < max_nodes; j++)
+			printf("%d ", numa_table[i].distance[j]);
 
-                printf("\n");
-        }
+		printf("\n");
+	}
 
-        if (verbose > 3) {
-                for (i = 0; i < max_nodes; i++)
-                        printf("NUMA %i 0x%lx-0x%lx 0x%lu\n", i,
-                                numa_table[i].first_pfn * PAGE_SIZE,
-                                numa_table[i].last_pfn * PAGE_SIZE,
-                                PAGE_SIZE * (numa_table[i].last_pfn -
-                                numa_table[i].first_pfn + 1));
+	if (verbose > 3) {
+		for (i = 0; i < max_nodes; i++)
+			printf("NUMA %i 0x%lx-0x%lx 0x%lu\n", i,
+					numa_table[i].first_pfn * PAGE_SIZE,
+					numa_table[i].last_pfn * PAGE_SIZE,
+					PAGE_SIZE * (numa_table[i].last_pfn -
+						numa_table[i].first_pfn + 1));
 
-        }
+	}
 
 	return 0;
 }
 
 int get_current_node(unsigned long physaddr)
 {
-        int i;
+	int i;
 
-        if (physaddr == (unsigned long)-1)
-                return -1;
+	if (physaddr == (unsigned long)-1)
+		return -1;
 
-        physaddr >>= PAGE_SHIFT;
+	physaddr >>= PAGE_SHIFT;
 
-        for (i = max_nodes - 1; i > -1; i--) {
-                if ((physaddr >= numa_table[i].first_pfn) &&
-                    (physaddr <= numa_table[i].last_pfn))
-                        return i;
-        }
+	for (i = max_nodes - 1; i > -1; i--) {
+		if ((physaddr >= numa_table[i].first_pfn) &&
+				(physaddr <= numa_table[i].last_pfn))
+			return i;
+	}
 
-        return -1;
+	return -1;
 }
 
 static int calcuate_weight(int node, unsigned int *counts, int numa_count)
 {
-        int weight, i;
+	int weight, i;
 
-        weight = 0;
-        for (i = 0; i < numa_count; i++)
-                weight += numa_table[node].distance[i] * counts[i];
+	weight = 0;
+	for (i = 0; i < numa_count; i++)
+		weight += numa_table[node].distance[i] * counts[i];
 
-        return weight;
+	return weight;
 }
 
 int get_target_node_numa(int node, unsigned long count, unsigned int *counts,
-			 int numa_count, unsigned long total_samples)
+		int numa_count, unsigned long total_samples)
 {
-        int next_node;
-        int weight, weight_current, weight_min;
+	int next_node;
+	int weight, weight_current, weight_min;
 	int i, minfree_pct;
 	unsigned long ccount = 0;
 
-        next_node = 0;
+	next_node = 0;
 	minfree_pct = freemem_threshold();
 
-        weight_current = calcuate_weight(node, counts, numa_count);
-        weight_min = weight_current;
-        for (i = 0; i < numa_count; i++) {
+	weight_current = calcuate_weight(node, counts, numa_count);
+	weight_min = weight_current;
+	for (i = 0; i < numa_count; i++) {
 		ccount += counts[i];
-                if (i == node)
-                        continue;
+		if (i == node)
+			continue;
 
-                weight = calcuate_weight(i, counts, numa_count);
-                if ((weight + (weight / 10)) < weight_min) {
+		weight = calcuate_weight(i, counts, numa_count);
+		if ((weight + (weight / 10)) < weight_min) {
 			if (node_freemem_get(i) >= minfree_pct) {
 				weight_min = weight;
 				next_node = i;
 			}
 		}
-        }
+	}
 
-        if ((weight_min + (weight_min / 10))<= weight_current)
+	if ((weight_min + (weight_min / 10))<= weight_current)
 		return next_node;
 
-        return node;
+	return node;
 }
 
 void update_sample_statistics_numa(unsigned long *samples, bool fetch)
@@ -369,64 +375,64 @@ void process_data_samples_numa(struct bst_node **rootpp,
 			       bool balancer_mode,
 			       bool user_space_only)
 {
-        int i, j, k, node, target_node;
-        unsigned long count;
-        bool hdr = true;
+	int i, j, k, node, target_node;
+	unsigned long count;
+	bool hdr = true;
 
-        for (node = 0; node < max_nodes; node++) {
-                k = (op_samples_cnt[node] * MIN_PCT) / 100;
-                for (i = op_samples_cnt[node] - 1; i > -1; i--) {
-                        float pct;
+	for (node = 0; node < max_nodes; node++) {
+		k = (op_samples_cnt[node] * MIN_PCT) / 100;
+		for (i = op_samples_cnt[node] - 1; i > -1; i--) {
+			float pct;
 
-                        if (!op_samples[node][i].count)
-                                continue;
-                        if (--k < 0)  {
-                                op_samples[node][i].count = 0;
-                                continue;
-                        }
+			if (!op_samples[node][i].count)
+				continue;
+			if (--k < 0)  {
+				op_samples[node][i].count = 0;
+				continue;
+			}
 
-                        count = 0;
-                        for (j = 0; j < max_nodes; j++)
-                                count += op_samples[node][i].counts[j];
+			count = 0;
+			for (j = 0; j < max_nodes; j++)
+				count += op_samples[node][i].counts[j];
 
-                        pct  = (float)op_samples[node][i].count * 100;
-                        pct /= total;
+			pct  = (float)op_samples[node][i].count * 100;
+			pct /= total;
 
-                        if ((!l3miss && (pct < MIN_PCT)) || count < MIN_CNT) {
-                                op_samples[node][i].count = 0;
-                                continue;
-                        }
+			if ((!l3miss && (pct < MIN_PCT)) || count < MIN_CNT) {
+				op_samples[node][i].count = 0;
+				continue;
+			}
 
-                        if (!user_space_only &&
-                                IBS_KERN_SAMPLE(
-                                op_samples[node][i].op_regs[IBS_OP_RIP])) {
+			if (!user_space_only &&
+					IBS_KERN_SAMPLE(
+						op_samples[node][i].op_regs[IBS_OP_RIP])) {
 
-                                op_samples[node][i].count = 0;
-                                continue;
-                        }
+				op_samples[node][i].count = 0;
+				continue;
+			}
 
-                        if (balancer_mode) {
-                                target_node = get_target_node_numa(node,
-                                                op_samples[node][i].count,
-                                                op_samples[node][i].counts,
-                                                max_nodes, total);
-                        } else {
-                                target_node = node;
-                        }
+			if (balancer_mode) {
+				target_node = get_target_node_numa(node,
+						op_samples[node][i].count,
+						op_samples[node][i].counts,
+						max_nodes, total);
+			} else {
+				target_node = node;
+			}
 
 
-                        if (node != target_node) {
-                                bst_add_page(op_samples[node][i].tgid,
-                                        target_node,
-                                        op_samples[node][i].op_regs[
-                                        IBS_DC_LINADDR],
-					true,
-                                        rootpp);
-                        }
+			if (node != target_node) {
+				bst_add_page(op_samples[node][i].tgid,
+						target_node,
+						op_samples[node][i].op_regs[
+						IBS_DC_LINADDR],
+						true,
+						rootpp);
+			}
 
-                        op_samples[node][i].count = 0;
-                }
-        }
+			op_samples[node][i].count = 0;
+		}
+	}
 }
 
 int numa_range_get(int idx, struct numa_range *range)
@@ -553,29 +559,43 @@ static int node_freemem_load(int node)
 	return get_freemem_pct(buffer, PAGE_SIZE);
 }
 
-int update_per_node_freemem(void)
+void  update_per_node_freemem(void *arg)
 {
 	int node, result;
+
+	atomic_init(&pending_freemem_cal, 1);
+	atomic_init(&error_status, 0);
 
 	for (node = 0; node < max_nodes; node++) {
 		result =  node_freemem_load(node);
 		if (result < 0) {
 			numa_table[node].freemem_pct = 0;
-			return -result;
+			atomic_store(&error_status, 1);
+			return;
 		}
-
 		assert(result >= 0 && result <= 100);
 
 		numa_table[node].freemem_pct = result;
 	}
 
-	return 0;
+	atomic_store(&pending_freemem_cal, 0);
 }
-
+/*
+ * Wait for thread to update node free memory
+ * if update is pending, return invalid value
+ * on update failure by thread.
+ */
 int node_freemem_get(int node)
 {
 	if (node >= max_nodes)
-		return -1;
+		return -EINVAL;
 
+	if(atomic_load(&pending_freemem_cal) &&
+			!atomic_load(&error_status)) {
+		usleep(100 * 1000);
+		if (atomic_load(&pending_freemem_cal) ||
+				atomic_load(&error_status))
+			return -EINVAL;
+	}
 	return numa_table[node].freemem_pct;
 }
