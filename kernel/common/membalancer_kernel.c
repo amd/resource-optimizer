@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 Advanced Micro Devices, Inc.
+ * Copyright (c) 2023 Advanced Micro Devices, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,6 +18,7 @@
  * process samples.
  */
 #include <linux/version.h>
+#include <uapi/linux/types.h>
 #include <bpf/bpf_tracing.h>
 #include <linux/ptrace.h>
 #include <uapi/linux/bpf.h>

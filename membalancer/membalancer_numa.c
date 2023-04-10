@@ -1,8 +1,8 @@
 /*
- * membalancer_numa.c -  Automatic NUMA memory balancer Based on IBS sampler
+ * membalancer_numa.c - Automatic NUMA memory balancer Based on IBS sampler
  *
  * Copyright (c) 2015 The Libbpf Authors. All rights reserved.
- * Copyright (c) 2023 Advanced Micro Devices, Inc.
+ * Copyright (c) 2023 Advanced Micro Devices, Inc. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:

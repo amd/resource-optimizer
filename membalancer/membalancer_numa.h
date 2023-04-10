@@ -1,9 +1,9 @@
 /*
- * membalancer_numa.h -  Process samples from IBS or software sampler
+ * membalancer_numa.h - Process samples from IBS or software sampler
  * and analyze the instruction and data (if available) samples.
  *
  * Copyright (c) 2015 The Libbpf Authors. All rights reserved.
- * Copyright (c) 2023 Advanced Micro Devices, Inc.
+ * Copyright (c) 2023 Advanced Micro Devices, Inc.  All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
