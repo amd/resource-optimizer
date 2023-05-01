@@ -117,3 +117,51 @@ int ibs_op_event(struct bpf_perf_event_data *ctx,
 
 	return 0;
 }
+
+int amd_lbr_sampler(struct bpf_perf_event_data *ctx,
+		    struct perf_branch_entry **firstentryout,
+		    int *entries, u64 *tgidout)
+{
+	struct bpf_perf_event_data_kern *kern_ctx;
+	struct perf_sample_data data;
+	char *datap = NULL;
+	struct perf_branch_stack br;
+	u64 tgid;
+
+	tgid = bpf_get_current_pid_tgid();
+	if (!valid_pid(tgid >> 32))
+		return -EINVAL;
+
+	kern_ctx = (struct bpf_perf_event_data_kern *)ctx;
+	if (bpf_probe_read(&datap, sizeof(datap), &(kern_ctx->data)))
+		return -EFAULT;
+
+	if (bpf_probe_read(&data, sizeof(data), datap))
+		return -EFAULT;
+
+	if ((data.sample_flags & PERF_SAMPLE_BRANCH_STACK) == 0)
+		return -EINVAL;
+
+	if (bpf_probe_read(&br, sizeof(br), data.br_stack))
+		return -EFAULT;
+
+	if (entries)
+		*entries = br.nr;
+
+	if (firstentryout)
+		*firstentryout = (void *)(data.br_stack + sizeof(br));
+
+	if(tgidout)
+		*tgidout = tgid;
+
+	return 0;
+}
+
+int amd_lbr_sampler_entry(struct perf_branch_entry *src,
+			  struct perf_branch_entry *dst)
+{
+	if (bpf_probe_read(dst, sizeof(*dst), src))
+		return -EFAULT;
+
+	return 0;
+}

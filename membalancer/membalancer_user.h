@@ -45,9 +45,9 @@ enum tuning_mode {
 
 enum tuning_profile {
 	MEMORY,
-	PROCESS
+	PROCESS,
 #if 0
-	/* This is not rally a profile.
+	/* This is not really a profile.
 	 * Its a mix of above two primary profiles.
 	 */
 	AUTOTUNE
@@ -61,26 +61,45 @@ enum map_fd_elems {
 	FETCH_COUNTER_MAP,
 	OP_COUNTER_MAP,
 	KNOBS,
+	LBR_PBE,
+	LBR_PBE_FLAGS,
 	TOTAL_MAPS
 };
 
 enum bpf_programs {
 	IBS_CODE_SAMPLER,
 	IBS_DATA_SAMPLER,
+	LBR_SAMPLER,
 	NON_IBS_CODE_SAMPLER,
 	TOTAL_BPF_PROGRAMS
 };
 
-char * memory_profile_program_names[TOTAL_BPF_PROGRAMS] = {
+static char * profiler_program_names[TOTAL_BPF_PROGRAMS] = {
 	"memstats_code_sampler",
 	"memstats_data_sampler",
+	NULL,
+	NULL,
+};
+
+static char * lbr_profiler_program_names[TOTAL_BPF_PROGRAMS] = {
+	NULL,
+	NULL,
+	"lbr_sampler",
+	NULL,
+};
+
+static char * memory_profile_program_names[TOTAL_BPF_PROGRAMS] = {
+	"memstats_code_sampler",
+	"memstats_data_sampler",
+	NULL,
 	NULL,
 };
 
 
-char * process_profile_program_names[TOTAL_BPF_PROGRAMS] = {
+static char * process_profile_program_names[TOTAL_BPF_PROGRAMS] = {
 	"processstats_code_sampler",
 	"processstats_data_sampler",
+	NULL,
 	NULL,
 };
 
@@ -104,6 +123,8 @@ static char *memory_map_fd_names[TOTAL_MAPS] = {
 	"fetch_counter",
 	"op_counter",
 	"knobs",
+	NULL,
+ 	NULL,
 };
 
 static char *process_map_fd_names[TOTAL_MAPS] = {
@@ -112,7 +133,29 @@ static char *process_map_fd_names[TOTAL_MAPS] = {
 	"process_stats_map",
 	"fetch_counter",
 	"op_counter",
-	"knobs"
+	"knobs",
+ 	NULL,
+	NULL
+};
+
+static char *profiler_map_fd_names[TOTAL_MAPS] = {
+	"ibs_fetch_map",
+	"ibs_op_map",
+	NULL,
+	"fetch_counter",
+	"op_counter",
+	"knobs",
+};
+
+static char *lbr_profiler_map_fd_names[TOTAL_MAPS] = {
+ 	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	"lbr_pbe",
+	"lbr_pbe_flags"
 };
 
 #endif

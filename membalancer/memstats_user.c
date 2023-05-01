@@ -64,6 +64,7 @@
 #include "membalancer_migrate.h"
 #include "heap_user.h"
 #include "membalancer_utils.h"
+int iprofiler;
 
 struct ibs_fetch_sample fetch_samples[MAX_NUMA_NODES][MAX_IBS_SAMPLES];
 unsigned long fetch_samples_max[MAX_NUMA_NODES];

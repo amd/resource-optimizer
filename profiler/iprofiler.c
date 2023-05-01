@@ -24,29 +24,42 @@
  * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
  * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-y* POSSIBILITY OF SUCH DAMAGE.
-
- *
+ * POSSIBILITY OF SUCH DAMAGE.
  */
-#include<sys/param.h>
-#include<stdio.h>
-#include<unistd.h>
-#include<fcntl.h>
-#include<errno.h>
-#include<string.h>
-#include<stdlib.h>
-#include<assert.h>
-#include<sys/types.h>
-#include<sys/stat.h>
-#include<sys/time.h>
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <errno.h>
+#include <string.h>
+#include <linux/bpf.h>
 #include <bpf/bpf.h>
+#include <bpf/libbpf.h>
+#include <sys/resource.h>
+#include <perf-sys.h>
+#include <trace_helpers.h>
+#include <assert.h>
+#include <time.h>
+#include <limits.h>
+#include <sys/time.h>
+#include <sys/param.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <ctype.h>
+#include <search.h>
+
+#include <linux/close_range.h>
 #include "membalancer_common.h"
 #include "membalancer_utils.h"
 #include "membalancer_numa.h"
 #include "membalancer_utils.h"
+#include "membalancer_user.h"
+#include "membalancer_lib.h"
+#include "profiler_pvt.h"
 
-#define __USE_GNU
-#include <search.h>
 #define MAX_FUNC_NAME 20
 
 #ifdef PROFILER_LARGE
@@ -491,8 +504,8 @@ static void process_data_samples(unsigned long total, bool user_space_only)
 	}
 }
 
-void profiler_process_samples(int fd_fetch, int fd_op, u64 fetch_cnt,
-			      u64 op_cnt)
+void iprofiler_process_samples(int fd_fetch, int fd_op, u64 fetch_cnt,
+			       u64 op_cnt)
 {
 	u64 total_freq_fetch, total_freq_op;
 
@@ -711,7 +724,7 @@ static void report_profiler_information_data(bool summary)
 	}
 }
 
-void report_profiler_information(bool summary)
+void iprofiler_report(bool summary)
 {
 	static struct timeval start;
 	struct timeval end;
@@ -758,4 +771,239 @@ void report_profiler_information(bool summary)
 	root_process_info = NULL;
 
 	assert(atomic_cmxchg(&light_semaphore, 1, 0) == 1);
+}
+
+int iprofiler_function(const char *kernobj, int freq, int msecs,
+		       char *include_pids, char *include_ppids,
+		       cpu_set_t *cpusetp)
+{
+	int msecs_nap;
+	int err = -1;
+	struct bpf_object *obj = NULL;
+	struct bpf_program *prog[TOTAL_BPF_PROGRAMS];
+	struct bpf_link **fetch_links = NULL, **op_links = NULL;
+	struct bpf_link **lbr_links = NULL;
+	char filename[256];
+	int map_fd[TOTAL_MAPS];
+	unsigned long fetch_cnt, op_cnt;
+	unsigned long fetch_cnt_old, op_cnt_old;
+	unsigned long fetch_cnt_new, op_cnt_new;
+	struct timeval start;
+
+	fetch_links = calloc(nr_cpus, sizeof(*fetch_links));
+	if (!fetch_links) {
+		fprintf(stderr, "ERROR: malloc of links\n");
+		goto cleanup;
+	}
+
+	op_links = calloc(nr_cpus, sizeof(*op_links));
+	if (!op_links) {
+		fprintf(stderr, "ERROR: malloc of links\n");
+		goto cleanup;
+	}
+
+	lbr_links = calloc(nr_cpus, sizeof(*lbr_links));
+	if (!lbr_links) {
+		fprintf(stderr, "ERROR: malloc of links\n");
+		goto cleanup;
+	}
+
+	snprintf(filename, sizeof(filename), "%s/membalancer_kernel.o",
+		 ebpf_object_dir);
+	obj = bpf_object__open_file(filename, NULL);
+	if (libbpf_get_error(obj)) {
+		fprintf(stderr, "ERROR: opening BPF object file failed\n");
+		obj = NULL;
+		goto cleanup;
+	}
+
+	/* load BPF program */
+	if (bpf_object__load(obj)) {
+		fprintf(stderr, "ERROR: loading BPF object file failed\n");
+		goto cleanup;
+	}
+
+	/* Resetting BPF map fd list */
+	memset(map_fd, -1, TOTAL_MAPS * sizeof(int));
+
+	err = init_and_load_bpf_programs(prog, map_fd, obj,
+					 profiler_program_names,
+					 profiler_map_fd_names);
+
+	if (err) {
+		fprintf(stderr, "ERROR:(%d)Could not load all"
+			"the required programs and maps!!\n", err);
+		goto cleanup;
+	}
+
+	cpu_nodes = fill_cpu_nodes(obj);
+	if (cpu_nodes <= 0)
+		goto cleanup;
+
+	if (process_include_pids(obj, include_pids, false))
+		goto cleanup;
+
+	if (process_include_pids(obj, include_ppids, true))
+		goto cleanup;
+
+	if (include_ppids)
+		set_knob(map_fd[KNOBS], CHECK_PPID, 1);
+
+	if ((is_tier_mode() ==  false) || is_default_tier_mode())
+		set_knob(map_fd[KNOBS], PER_NUMA_ACCESS_STATS, 1);
+
+	if (user_space_only)
+		set_knob(map_fd[KNOBS], USER_SPACE_ONLY, 1);
+
+	set_knob(map_fd[KNOBS], MY_PAGE_SIZE, MEMB_PAGE_SIZE);
+	set_knob(map_fd[KNOBS], MY_OWN_PID, getpid());
+	set_knob(map_fd[KNOBS], KERN_VERBOSE, verbose);
+
+	if (l3miss)
+		set_knob(map_fd[KNOBS], DEFER_PROCESS,
+			 L3MISS_DEFER_PROCESS_CNT);
+	else
+		set_knob(map_fd[KNOBS], DEFER_PROCESS,
+			 DEFER_PROCESS_CNT);
+
+	set_knob(map_fd[KNOBS], LAST_KNOB, 1);
+
+	err = init_heap(obj);
+	if (err != 0)
+		goto cleanup;
+
+	err = parse_additional_bpf_programs(obj);
+	if (err)
+		goto cleanup;
+
+	err = launch_additional_bpf_programs();
+	if (err)
+		goto cleanup;
+
+	printf("\f");
+	printf("%s%s", BRIGHT, BMAGENTA);
+	printf("Collecting IBS %s samples .....\n",
+		(l3miss) ? "MISS Filter" : "CLASSIC");
+	printf("%s", NORM);
+
+	fetch_cnt_old = 0;
+	fetch_cnt_new = 0;
+	op_cnt_old = 0;
+	op_cnt_new = 0;
+
+	gettimeofday(&start, NULL);
+
+	open_ibs_devices();
+	while (!err) {
+		assert(prog[IBS_DATA_SAMPLER]);
+		if (ibs_op_sampling_begin(freq, prog[IBS_DATA_SAMPLER],
+					op_links, cpusetp) != 0) {
+			if (l3miss)
+				fprintf(stderr,
+					"IBS OP L3 miss fitlering "
+					"not supported\n");
+			else
+				fprintf(stderr,
+					"IBS OP sampling not supported\n");
+		}
+
+		assert(prog[IBS_CODE_SAMPLER]);
+		if (ibs_fetch_sampling_begin(freq, prog[IBS_CODE_SAMPLER],
+					     fetch_links, cpusetp) != 0) {
+			if (l3miss)
+				fprintf(stderr,
+					"IBS Fetch L3 miss filtering "
+					"not supported\n");
+
+			else
+				fprintf(stderr,
+					"IBS Fetch sampling not supported\n");
+
+		}
+
+		if (prog[LBR_SAMPLER] &&
+		    lbr_sampling_begin(freq, prog[LBR_SAMPLER],
+				       lbr_links, cpusetp) != 0) {
+			fprintf(stderr, "LBR sampling not supported\n");
+			goto cleanup;
+		}
+
+		for (; ;)  {
+			fetch_cnt = peek_ibs_samples(map_fd[FETCH_COUNTER_MAP],
+						     fetch_cnt_old,
+						     &fetch_cnt_new);
+
+			op_cnt = peek_ibs_samples(map_fd[OP_COUNTER_MAP],
+						  op_cnt_old, &op_cnt_new);
+
+			if ((fetch_cnt >= MIN_IBS_SAMPLES)) {
+				fetch_cnt_old = fetch_cnt_new;
+				if (op_cnt >= MIN_IBS_OP_SAMPLES) {
+					op_cnt_old = op_cnt_new;
+					break;
+				}
+				break;
+			}
+
+			if ((op_cnt >= MIN_IBS_SAMPLES)) {
+				op_cnt_old = op_cnt_new;
+				if (fetch_cnt >= MIN_IBS_FETCH_SAMPLES) {
+					fetch_cnt_old = fetch_cnt_new;
+					break;
+				}
+				break;
+			}
+
+			if ((op_cnt >= 2 * MIN_IBS_SAMPLES) ||
+			    (fetch_cnt >= 2 * MIN_IBS_SAMPLES)) {
+				op_cnt_old    = op_cnt_new;
+				fetch_cnt_old = fetch_cnt_new;
+				break;
+			}
+
+			msecs_nap = msecs * 1000 / 10;
+			if (msecs_nap < 1000)
+				msecs_nap = 1000;
+
+			usleep(msecs_nap);
+			/*
+			 * Check if migration is making progress. If not
+			 * break out of the processing loop.
+			 */
+		}
+
+		if (fetch_links)
+			ibs_sampling_end(fetch_links); /* IBS fetch */
+
+		if (op_links)
+			ibs_sampling_end(op_links);    /* IBS op */
+
+		iprofiler_process_samples(map_fd[IBS_FETCH_MAP],
+					 map_fd[IBS_OP_MAP], fetch_cnt, op_cnt);
+		iprofiler_report(false);
+
+		close_range(100, 8192, 0);
+		usleep(msecs * 1000 / maximizer_mode);
+	}
+
+cleanup:
+	profiler_cleanup(map_fd[IBS_FETCH_MAP], map_fd[IBS_OP_MAP]);
+	close_ibs_devices();
+	terminate_additional_bpf_programs();
+
+	if (fetch_links)
+		ibs_sampling_end(fetch_links); /* IBS fetch */
+
+	if (op_links)
+		ibs_sampling_end(op_links);    /* IBS op */
+
+	if (lbr_links)
+		ibs_sampling_end(lbr_links);  /* LBR */
+
+	free(fetch_links);
+	free(op_links);
+	free(lbr_links);
+	bpf_object__close(obj);
+
+	return err;
 }

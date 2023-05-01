@@ -4,6 +4,7 @@ CLANG ?= clang
 LLC ?= llc
 MODULE   := membalancer
 BIN_USER := ${MODULE}_user.o
+LIB := ${MODULE}_lib.o
 BIN_NUMA := ${MODULE}_numa.o
 BIN_TIER := ${MODULE}_tier.o
 BIN_TRACER := ${MODULE}_tracer.o
@@ -14,7 +15,6 @@ MEMSTATS_USER := memstats_user.o
 HEAP_USER := heap_user.o
 TPOOL := thread_pool.o
 PROCESS_STATS := processtats_user.o
-IPROFILER := iprofiler.o
 GETPADDR:= getpaddr.o
 LIBS  := ${LIBBPF}/src/libbpf.so -lz -lelf -lnuma -lpthread
 DEFS = -DMEMBALANCE_FORK
@@ -31,13 +31,11 @@ USR_INCLUDE := -I. \
 	-I../include/amd \
 
 all:   ${BIN_TRACER} ${BIN_NUMA} ${BIN_UTILS} ${BIN_TIER} ${HEAP_USER} \
-       ${PROCESS_STATS} ${HEAP} ${BIN_MIGRATE} ${GETPADDR} ${TPOOL}\
-       ${MEMSTATS_USER} ${IPROFILER} ${BIN_USER}
+	${PROCESS_STATS} ${HEAP} ${BIN_MIGRATE} ${GETPADDR} ${TPOOL}\
+	${MEMSTATS_USER} ${LIB} ${BIN_USER}
 
 getpaddr.o: getpaddr.c
 	$(CLANG) -c $<  ${USR_INCLUDE}
-iprofiler.o: iprofiler.c
-	$(CLANG) -c $<  ${USR_INCLUDE} -mcmodel=large
 memstats_user.o: memstats_user.c
 	$(CLANG) -c $<  ${USR_INCLUDE} -mcmodel=large
 processtats_user.o: processtats_user.c
@@ -49,14 +47,15 @@ processtats_user.o: processtats_user.c
 %_tracer.o: %_tracer.c
 	$(CLANG) -c $<  ${USR_INCLUDE} -mcmodel=large
 %_utils.o: %_utils.c
-	$(CLANG) -c $<  ${USR_INCLUDE} -mcmodel=large
+	$(CLANG) -c $<  ${USR_INCLUDE} -mcmodel=large 
 %_migrate.o: %_migrate.c
 	$(CLANG) -c $<  ${USR_INCLUDE}
 heap_user.o: heap_user.c
 	$(CLANG) -c $<  ${USR_INCLUDE}
 thread_pool.o: thread_pool.c
 	$(CLANG) -c $<  ${USR_INCLUDE} -mcmodel=large
-
+%_lib.o: %_lib.c
+	$(CLANG) -c $<  ${USR_INCLUDE} -mcmodel=large
 %_user.o: %_user.c
 	$(CLANG) \
 	./membalancer_numa.o \
@@ -64,12 +63,12 @@ thread_pool.o: thread_pool.c
 	./membalancer_tracer.o \
 	./membalancer_utils.o \
 	./membalancer_migrate.o \
-	./iprofiler.o \
 	./memstats_user.o \
 	./getpaddr.o \
 	./heap_user.o \
 	./processtats_user.o \
 	./thread_pool.o \
+	./membalancer_lib.o \
 	$<  ${USR_INCLUDE} -o ${MODULE} \
 	${LIBS} ${DEFS} -Wall -mcmodel=large
 clean:

@@ -79,8 +79,6 @@ struct numa_range {
 #define ATOMIC_CMPXCHG(v, cur, new) __sync_val_compare_and_swap((v), cur, new)
 #define ATOMIC64_CMPXCHG(v, cur, new) __sync_val_compare_and_swap((v), cur, new)
 #define VALID_NODE(n) (n >= 0 && n < MAX_NUMA_NODES)
-
-#if (__clang_major__ < 14)
 #define ATOMIC_INC_RETURN(v) atomic_inc_return_dummy(v)
 static inline u32 atomic_inc_return_dummy(volatile u32 *v)
 {
@@ -91,6 +89,8 @@ static inline u32 atomic_inc_return_dummy(volatile u32 *v)
 	return old;
 }
 
+
+#if (__clang_major__ < 14)
 #define JUST_ONCE(v, cur, new) just_once(v)
 static inline bool just_once(volatile unsigned long *v)
 {
@@ -104,7 +104,6 @@ static inline bool just_once(volatile unsigned long *v)
 #else
 #define JUST_ONCE(v, cur, new) ATOMIC_CMPXCHG(v, cur, new)
 #define ATOMIC_CMPXCHG(v, cur, new) __sync_val_compare_and_swap((v), cur, new)
-#define ATOMIC_INC_RETURN(v) __atomic_add_fetch((v), 1, __ATOMIC_SEQ_CST)
 #endif
 
 #else

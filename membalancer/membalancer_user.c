@@ -65,6 +65,7 @@
 #include "heap_user.h"
 #include "membalancer_user.h"
 #include "thread_pool.h"
+#include "membalancer_lib.h"
 
 #define MEMB_CLOCK 25
 #define MEMB_INTVL 100
@@ -79,6 +80,7 @@ int timer_clock = 1;
 
 bool do_migration = false;
 enum tuning_mode tuning_mode = MEMORY_MOVE;
+static unsigned int cpu_nodes;
 
 bool histogram_format = false;
 static float maximizer_mode = 0.2;
@@ -89,20 +91,13 @@ unsigned int min_ibs_samples = MIN_IBS_CLASSIC_SAMPLES;
 static int migration_timeout_sec = 60;
 static int min_migrated_pages = MIN_MIGRATED_PAGES;
 
-static char cmd_args[]  = "c:f:F:P:p:r:m:M:o:v:U:T:t:D:L:B:i:I:uhcbHVlS::";
-static int ibs_fetch_device = -1;
-static int ibs_op_device    = -1;
 #define FETCH_CONFIG        57
 #define FETCH_CONFIG_L3MISS 59
 #define OP_CONFIG           19
 #define OP_CONFIG_L3MISS    16
 
-static int ibs_fetch_config;
-static int ibs_op_config;
 static unsigned int cpu_nodes;
-static pid_t mypid;
-bool l3miss = false;
-int iprofiler;
+static char cmd_args[] = "c:f:F:P:p:r:m:M:o:v:U:T:t:D:L:B:uhcbHVlS::";
 
 static u32 sampling_interval_cnt = 100;
 static u32 sampling_iter;
@@ -202,8 +197,6 @@ static void usage(const char *cmd)
 			"        [-<tier_num>:<...>]\n");
 	printf("       -F minimum percentage of free memory in a node "
 			"to perform migraitons to it\n");
-	printf("       -I <n>  runs in the profiler mode, reports up to "
-			"n top most samples of instruction and data\n");
 	printf("       -o <eBPF kernel module location, default is ");
 	printf("../kern/common\n");
 	printf("       <duration> Interval in milliseconds, "
@@ -244,10 +237,6 @@ static void usage(const char *cmd)
 	printf("8. Example for list of cpus\n");
 	printf("%s -u -P 99053 -c 1,2,3,10-20,30-40\n",cmd);
 	printf("\n");
-	printf("9. Example for instruction profiler that reports 5 top most ");
-	printf("instruction and data\n   samples in everty 2 seconds\n");
-	printf("%s  -f 25 -u  -v4 -m 0.0001 -M 1 -r 2 200 -H  -I5 -r2\n", cmd);
-	printf("\n");
 }
 
 struct tune_mode {
@@ -277,444 +266,10 @@ int freemem_threshold(void)
 	return min_freemem_pct;
 }
 
-static int get_ibs_device_type(const char *dev)
-{
-	int fd, ret;
-	char buffer[32];
-
-	fd = open(dev, O_RDONLY);
-	if (fd < 0)
-		return -1;
-
-	memset(buffer, 0, sizeof(buffer));
-	ret = read(fd, &buffer, sizeof(buffer));
-	close(fd);
-
-	if (ret < 0)
-		return -1;
-
-	return atoi(buffer);
-}
-
-static void open_ibs_devices(void)
-{
-	ibs_fetch_device = get_ibs_device_type(IBS_FETCH_DEV);
-	ibs_op_device    = get_ibs_device_type(IBS_OP_DEV);
-}
-
-static int add_pid(int fd,  char *pid_string)
-{
-	int i, j;
-	pid_t pid, from_pid, to_pid;
-	char *hyphen, *from, *to;
-
-	hyphen = strchr(pid_string, '-');
-	if (hyphen) {
-		*hyphen = 0;
-		from = pid_string;
-		to   =  ++hyphen;
-
-		from_pid = atoi(from);
-		to_pid = atoi(to);
-
-		for (i = from_pid; i <= to_pid; i++)
-			bpf_map_update_elem(fd, &i, &i, BPF_NOEXIST);
-
-		return 0;
-	}
-
-	i = 0;
-	while (pid_string[i]) {
-		j = i;
-		
-		while (pid_string[j] != ',' && pid_string[j] != 0)
-			j++;
-
-		if (pid_string[j] == ',') {
-			pid_string[j] = 0;
-			j++;
-		}
-		
-		pid = atoi(&pid_string[i]);
-		if (!mypid)
-			mypid = pid;
-		bpf_map_update_elem(fd, &pid, &pid, BPF_NOEXIST);
-		i = j;
-	}
-
-	close(fd);
-
-	return 0;
-}
-
-static int process_include_pids(struct bpf_object *obj, char *pid_string,
-				bool ppid)
-{
-	int fd, pid;
-
-	if (ppid)
-		fd = bpf_object__find_map_fd_by_name(obj, "ppid_include");
-	else
-		fd = bpf_object__find_map_fd_by_name(obj, "pid_include");
-
-	if (fd < 0) {
-		fprintf(stderr, "Cannot open pid filter map\n");
-		return -EINVAL;
-	}
-
-	if (pid_string == NULL) {
-		pid = -1;
-		bpf_map_update_elem(fd, &pid, &pid, BPF_NOEXIST);
-		close(fd);
-		return 0;
-	}
-
-	return add_pid(fd, pid_string);
-}
-
-static bool is_cpu_online(int cpu)
-{
-	int fd, ret;
-	char online;
-	char dev[1024];
-
-	snprintf(dev, sizeof(dev),
-		"/sys/devices/system/cpu/cpu%d/online", cpu);
-	fd = open(dev, O_RDONLY);
-	if (fd < 0)
-		return false;
-
-	online = 0;
-	ret = read(fd, &online, sizeof(online));
-	close(fd);
-
-	if (ret < 0)
-		return false;
-
-	return online;
-}
-
-static const char *next_token(const char *q,  int sep)
-{
-	q = strchr(q, sep);
-	if (q)
-		q++;
-
-	return q;
-}
-
-static int next_number(const char *str, char **end, unsigned int *result)
-{
-	unsigned int ret;
-	errno = 0;
-	if (str == NULL || *str == '\0' || !isdigit(*str))
-		return -EINVAL;
-
-	ret = (unsigned int) strtoul(str, end, 10);
-	if (errno)
-		return -errno;
-	if (str == *end)
-		return -EINVAL;
-
-	*result = ret;
-
-	return 0;
-}
-
-static int attach_perfevent(cpu_set_t *cpusetp, struct bpf_link *links[],
-		struct bpf_program *prog, struct perf_event_attr *perf) {
-	int pmu_fd;
-	int cpu = 0;
-
-	while( cpu < nr_cpus ) {
-
-		if(!CPU_ISSET(cpu, cpusetp)) {
-			cpu++;
-			continue;
-		}
-		pmu_fd = sys_perf_event_open(perf, -1, cpu, -1, 0);
-		if (pmu_fd < 0) {
-			fprintf(stderr, "Cannot arm software sampling\n");
-			return 1;
-		}
-		links[cpu] = bpf_program__attach_perf_event(prog, pmu_fd);
-		if (libbpf_get_error(links[cpu])) {
-			fprintf(stderr, "ERROR: Attach perf event\n");
-			links[cpu] = NULL;
-			close(pmu_fd);
-			return 1;
-		}
-		cpu++;
-	}
-	return 0;
-}
-
-static int parse_cpulist(const char* cpu_list, cpu_set_t *cpusetp,
-		size_t set_size)
-{
-	const char *p, *q;
-	char *end = NULL;
-	unsigned int from; /* start of range */
-	unsigned int to; /* end of range */
-	const char *c1,*c2;
-	int err;
-
-
-	q = cpu_list;
-	p = q;
-	while (p) {
-		q = next_token(q,',');
-		err = next_number(p, &end, &from);
-		if (err)
-			return err;
-		to = from;
-		p = end;
-
-		c1 = next_token(p, '-');
-		c2 = next_token(p, ',');
-
-		if (c1 != NULL && (c2 == NULL || c1 < c2)) {
-			err = next_number(c1, &end, &to);
-			if (err)
-				return err;
-		}
-		if (from > to)
-			return -EINVAL;
-
-		while (from <= to) {
-			if (from >= nr_cpus)
-				return -EINVAL;
-			if (!is_cpu_online(from)) {
-				from++;
-				continue;
-			}
-			CPU_SET_S(from, set_size, cpusetp);
-			from++;
-		}
-		p = q;
-	}
-
-	return 0;
-}
-
-static int perf_sampling_begin(int freq, struct bpf_program *prog,
-				struct bpf_link *links[],
-				cpu_set_t *cpusetp)
-{
-	struct perf_event_attr perf = {
-		.freq = 1,
-		.type = PERF_TYPE_SOFTWARE,
-		.sample_period = freq,
-		.config = PERF_COUNT_SW_CPU_CLOCK,
-		.sample_type = PERF_SAMPLE_RAW | PERF_SAMPLE_CPU,
-		.disabled = 1,
-		.inherit = 1,
-		.size = sizeof(struct perf_event_attr),
-		.exclude_kernel = 0,
-		.exclude_user = 0,
-		.exclude_idle = 0,
-		.exclude_hv = 0,
-		.exclude_host = 0,
-		.exclude_guest = 0,
-		.pinned = 0,
-		.precise_ip = 0,
-		.mmap = 1,
-		.comm = 1,
-		.task = 1,
-		.sample_id_all = 1,
-		.comm_exec = 1,
-		.read_format = 0,
-	};
-
-	if (attach_perfevent(cpusetp, links, prog, &perf)){
-		return 1;
-	}
-
-	return 0;
-}
-
-static int ibs_fetch_sampling_begin(int freq, struct bpf_program *prog,
-				    struct bpf_link *links[],
-				    cpu_set_t *cpusetp)
-{
-	struct perf_event_attr ibs_fetch = {
-		.freq = 1,
-		.type = ibs_fetch_device,
-		.sample_period = freq,
-		.config = (1ULL << ibs_fetch_config),
-		.sample_type = PERF_SAMPLE_RAW | PERF_SAMPLE_CPU,
-				/*
-				PERF_SAMPLE_ADDR | PERF_SAMPLE_ADDR |
-				PERF_SAMPLE_PHYS_ADDR,
-				*/
-		.disabled = 1,
-		.inherit = 1,
-		.size = sizeof(struct perf_event_attr),
-		.exclude_kernel = 0,
-		.exclude_user = 0,
-		.exclude_idle = 0,
-		.exclude_hv = 0,
-		.exclude_host = 0,
-		.exclude_guest = 0,
-		.pinned = 0,
-		.precise_ip = 0,
-		.mmap = 1,
-		.comm = 1,
-		.task = 1,
-		.sample_id_all = 1,
-		.comm_exec = 1,
-		.read_format = 0,
-	};
-
-	if (ibs_fetch_device < 0)
-		return -1;
-
-	if (attach_perfevent(cpusetp, links, prog, &ibs_fetch)){
-		return 1;
-	}
-
-	return 0;
-}
-
-static void ibs_sampling_end(struct bpf_link *links[])
-{
-	int i;
-	int pmu_fd;
-
-	for (i = 0; i < nr_cpus; i++) {
-		if (links[i] == NULL)
-			continue;
-
-		pmu_fd = bpf_link__fd(links[i]);
-		close(pmu_fd);
-		bpf_link__destroy(links[i]);
-		links[i] = NULL;
-	}
-}
-
 static void ibs_fetchop_config_set(void)
 {
-	ibs_fetch_config = (l3miss) ? FETCH_CONFIG_L3MISS : FETCH_CONFIG;
-	ibs_op_config    = (l3miss) ? OP_CONFIG_L3MISS : OP_CONFIG;
 	min_ibs_samples  = (l3miss) ? MIN_IBS_L3MISS_SAMPLES :
 			   MIN_IBS_CLASSIC_SAMPLES;
-}
-
-
-int ibs_op_sampling_begin(int freq, struct bpf_program *prog,
-				struct bpf_link *links[],
-				cpu_set_t *cpusetp)
-{
-	struct perf_event_attr ibs_op  = {
-		.freq = 1,
-		.type = ibs_op_device,
-		.sample_period = freq,
-		.config = (1ULL << ibs_op_config),
-		.sample_type = PERF_SAMPLE_RAW | PERF_SAMPLE_CPU,
-		.disabled = 1,
-		.inherit = 1,
-		.size = sizeof(struct perf_event_attr),
-		.exclude_kernel = 0,
-		.exclude_user = 0,
-		.exclude_idle = 0,
-		.exclude_hv = 0,
-		.exclude_host = 0,
-		.exclude_guest = 0,
-		.pinned = 0,
-		.precise_ip = 0,
-		.mmap = 1,
-		.comm = 1,
-		.task = 1,
-		.sample_id_all = 1,
-		.comm_exec = 1,
-		.read_format = 0,
-	};
-
-	if (ibs_op_device < 0)
-		return -1;
-
-	if (attach_perfevent(cpusetp, links, prog, &ibs_op)){
-		return 1;
-	}
-
-	return 0;
-}
-
-static int read_cpu_node(int cpu, char *buffer, int buffer_size)
-{
-	char filename[PATH_MAX];
-	int fd, bytes;
-
-	snprintf(filename, sizeof(filename),
-		 "/sys/devices/system/node/node%d/cpumap", cpu);
-	fd = open(filename, O_RDONLY);
-	if (fd < 0)
-		return -EINVAL;
-
-	bytes = read(fd, buffer, buffer_size);
-	close(fd);
-
-	return bytes;
-}
-
-static int populate_cpu_map(struct bpf_object *obj, int fd, int node,
-			    char *cpu_map, int buflen)
-{
-	unsigned char next_cpuset;
-	int next_cpu, i, j;
-	int k;
-	int cpu_cnt = 0;
-
-	k = 0;
-	CPU_ZERO(&node_cpumask[node]);
-
-	for (i = buflen - 1; i >= 0; i--) {
-		next_cpuset = (unsigned char)cpu_map[i];
-		if (next_cpuset == '0') {
-			k++;
-			continue;
-		}
-
-		if (next_cpuset == ',')
-			continue;
-
-		assert(next_cpuset == 'f');
-
-		for (j = 0; j < 4; j++) {
-			next_cpu = k * 4 + j;
-			CPU_SET(next_cpu, &node_cpumask[node]);
-			bpf_map_update_elem(fd, &next_cpu, &node, BPF_NOEXIST);
-			numa_node_cpu[node].cpu_list[cpu_cnt++] = next_cpu;
-			/* Keeping a simple lookup table for cpu to node */
-			numa_cpu[next_cpu]  = node;
-		}
-		k++;
-	}
-	numa_node_cpu[node].cpu_cnt = cpu_cnt;
-
-	return 0;
-}
-
-static int fill_cpu_nodes(struct bpf_object *obj)
-{
-	char cpu_map[1024];
-	int node, fd, bytes;
-
-	fd = bpf_object__find_map_fd_by_name(obj, "cpu_map");
-	if (fd < 0)
-		return -EINVAL;
-
-	memset(numa_cpu, -1, MAX_CPU_CORES * sizeof(int));
-
-	for (node = 0;; node++) {
-		bytes = read_cpu_node(node, cpu_map, sizeof(cpu_map));
-		if (bytes <= 1)
-			break;
-
-		populate_cpu_map(obj, fd, node, cpu_map, bytes - 1);
-	}
-
-	return node;
 }
 
 static int init_page_mover(void)
@@ -812,17 +367,6 @@ static void page_mover_parallel_enqueue(struct page_list *list,
 	}
 
 	free(list);
-}
-
-static unsigned long milliseconds_elapsed(struct timeval *start,
-					struct timeval *end)
-{
-	unsigned long milliseconds;
-
-	milliseconds = (end->tv_sec - start->tv_sec) * 1000UL;
-	milliseconds += (end->tv_usec - start->tv_usec) / 1000;
-
-	return milliseconds;
 }
 
 static void * page_move_function(void *arg)
@@ -1439,7 +983,6 @@ static void process_samples(int *map_fd, int msecs, int fetch)
 	if (!fetch_cnt && !op_cnt)
 		return;
 
-
 	if (trace_dir)
 		report_tracer_statistics();
 	else
@@ -1751,33 +1294,34 @@ static int init_and_load_bpf_programs(struct bpf_program **prog,
 
 	switch(profile) {
 	case MEMORY:
-			if (verbose >= 5)
-				printf("Loading bpf programs and maps for "
-					"memory profile\n");
-			sts = load_bpf_programs(prog, obj,
-						memory_profile_program_names,
-						TOTAL_BPF_PROGRAMS);
-			if (sts)
-				break;
-			sts = load_perf_fd_bpf_maps(map_fd, obj,
-						memory_map_fd_names, TOTAL_MAPS);
+		if (verbose >= 5)
+			printf("Loading bpf programs and maps for "
+			       "memory profile\n");
+		sts = load_bpf_programs(prog, obj,
+					memory_profile_program_names,
+					TOTAL_BPF_PROGRAMS);
+		if (sts)
 			break;
-        case PROCESS:
-			if (verbose >= 5)
-				printf("Loading bpf programs and maps for "
-					"process profile\n");
-			sts = load_bpf_programs(prog, obj,
-						process_profile_program_names,
-						TOTAL_BPF_PROGRAMS);
-			if (sts)
-				break;
 
-			sts = load_perf_fd_bpf_maps(map_fd, obj,
-						process_map_fd_names, TOTAL_MAPS);
+		sts = load_perf_fd_bpf_maps(map_fd, obj, memory_map_fd_names,
+					    TOTAL_MAPS);
+		break;
+        case PROCESS:
+		if (verbose >= 5)
+			printf("Loading bpf programs and maps for "
+			       "process profile\n");
+		sts = load_bpf_programs(prog, obj,
+					process_profile_program_names,
+					TOTAL_BPF_PROGRAMS);
+		if (sts)
 			break;
-		default:
-			printf("Invalid profile for tuning\n");
-			sts = -EINVAL;
+
+		sts = load_perf_fd_bpf_maps(map_fd, obj, process_map_fd_names,
+					    TOTAL_MAPS);
+		break;
+	default:
+		printf("Invalid profile for tuning\n");
+		sts = -EINVAL;
 	}
 
 	return sts;
@@ -1792,7 +1336,6 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 	struct bpf_object *obj = NULL;
 	struct bpf_program *prog[TOTAL_BPF_PROGRAMS];
 	struct bpf_link **fetch_links = NULL, **op_links = NULL;
-	struct bpf_link **perf_links = NULL;
 	char filename[256];
 	int map_fd[TOTAL_MAPS];
 	unsigned long fetch_cnt, op_cnt;
@@ -1813,12 +1356,6 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 
 	op_links = calloc(nr_cpus, sizeof(struct bpf_link *));
 	if (!op_links) {
-		fprintf(stderr, "ERROR: malloc of links\n");
-		goto cleanup;
-	}
-
-	perf_links = calloc(nr_cpus, sizeof(struct bpf_link *));
-	if (!perf_links) {
 		fprintf(stderr, "ERROR: malloc of links\n");
 		goto cleanup;
 	}
@@ -1852,7 +1389,9 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 			goto cleanup;
 		}
 	} else {
-		assert((tuning_mode == AUTOTUNE) || (tuning_mode == PROCESS_MOVE));
+		assert((tuning_mode == AUTOTUNE) ||
+		       (tuning_mode == PROCESS_MOVE));
+
 		err = init_and_load_bpf_programs(prog, map_fd, obj, PROCESS);
 		if (err) {
 			/* We really nothing much to clean up here,
@@ -1883,25 +1422,16 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 	if (user_space_only)
 		set_knob(map_fd[KNOBS], USER_SPACE_ONLY, 1);
 
-	if (iprofiler) {
-		if (l3miss)
-			set_knob(map_fd[KNOBS], LATENCY_STATS_L3MISS, 1);
-		else
-			set_knob(map_fd[KNOBS], LATENCY_STATS, 1);
-	}
-
 	set_knob(map_fd[KNOBS], MY_PAGE_SIZE, MEMB_PAGE_SIZE);
 	set_knob(map_fd[KNOBS], MY_OWN_PID, getpid());
 	set_knob(map_fd[KNOBS], KERN_VERBOSE, verbose);
 
-	if (iprofiler == 0) {
-		if (l3miss)
-			set_knob(map_fd[KNOBS], DEFER_PROCESS,
-				 L3MISS_DEFER_PROCESS_CNT);
-		else
-			set_knob(map_fd[KNOBS], DEFER_PROCESS,
-				 DEFER_PROCESS_CNT);
-	}
+	if (l3miss)
+		set_knob(map_fd[KNOBS], DEFER_PROCESS,
+			 L3MISS_DEFER_PROCESS_CNT);
+	else
+		set_knob(map_fd[KNOBS], DEFER_PROCESS,
+			 DEFER_PROCESS_CNT);
 
 	if (tuning_mode == PROCESS_MOVE ||
 		tuning_mode == AUTOTUNE) {
@@ -2002,8 +1532,9 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 					"IBS OP sampling not supported\n");
 		}
 
-		if (ibs_fetch_sampling_begin(freq, prog[IBS_CODE_SAMPLER],
-					     fetch_links, cpusetp) != 0) {
+		err = ibs_fetch_sampling_begin(freq, prog[IBS_CODE_SAMPLER],
+						fetch_links, cpusetp);
+		if (err) {
 			if (l3miss)
 				fprintf(stderr,
 					"IBS Fetch L3 miss filtering "
@@ -2013,10 +1544,7 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 				fprintf(stderr,
 					"IBS Fetch sampling not supported\n");
 
-			if (perf_sampling_begin(freq,
-						prog[NON_IBS_CODE_SAMPLER],
-						perf_links, cpusetp) != 0)
-				goto cleanup;
+			goto cleanup;
 		}
 
 		for (; ;)  {
@@ -2075,24 +1603,18 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 		if (op_links)
 			ibs_sampling_end(op_links);    /* IBS op */
 
-		if (iprofiler) {
-			profiler_process_samples(map_fd[IBS_FETCH_MAP],
-						 map_fd[IBS_OP_MAP],
-						 fetch_cnt, op_cnt);
-			report_profiler_information(false);
-		} else {
-
-			if (do_migration && !(tuning_mode & MEMORY_MOVE)) {
-				err = threadpool_add_work(&threadpool, update_node_loadavg, NULL);
-				if (err)
-					goto cleanup;
-			}
-			err = threadpool_add_work(&threadpool, update_per_node_freemem, NULL);
+		if (do_migration && !(tuning_mode & MEMORY_MOVE)) {
+			err = threadpool_add_work(&threadpool,
+						  update_node_loadavg, NULL);
 			if (err)
-				goto cleanup;
-
-			ibs_process_samples(ibs_worker, fetch_cnt, op_cnt);
+					goto cleanup;
 		}
+		err = threadpool_add_work(&threadpool,
+					   update_per_node_freemem, NULL);
+		if (err)
+			goto cleanup;
+
+		ibs_process_samples(ibs_worker, fetch_cnt, op_cnt);
 
 		usleep(msecs * 1000 / maximizer_mode);
 	}
@@ -2101,6 +1623,7 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 cleanup:
 	deinit_ibs_sample_worker(atomic64_read(&ibs_workers));
 	terminate_additional_bpf_programs();
+
 	if (fetch_links)
 		ibs_sampling_end(fetch_links); /* IBS fetch */
 
@@ -2109,7 +1632,6 @@ cleanup:
 
 	free(fetch_links);
 	free(op_links);
-	free(perf_links);
 	bpf_object__close(obj);
 	threadpool_destroy(&threadpool);
 
@@ -2282,9 +1804,6 @@ int main(int argc, char **argv)
 		case 'v':
 			verbose = atoi(optarg);
 			break;
-		case 'I':
-			iprofiler = atoi(optarg);
-			break;
 		case 'h':
 			usage(argv[0]);
 			return 0;
@@ -2328,7 +1847,8 @@ int main(int argc, char **argv)
 				if (argv[optind]) {
 					sampling_count = atoi(argv[optind++]);
 					if (sampling_count >= 0)
-						sampling_interval_cnt = sampling_count;
+						sampling_interval_cnt =
+								sampling_count;
 				}
 			}
 			break;

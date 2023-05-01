@@ -149,9 +149,6 @@ int get_code_samples(int fd, __u64 *total_freq, bool defer);
 void cleanup_code_samples(int fd);
 int get_data_samples(int fd, __u64 *total_freq, bool defer);
 void cleanup_data_samples(int fd);
-void profiler_process_samples(int fd_fetch, int fd_op, u64 fetch_cnt,
-			      u64 op_cnt);
-void report_profiler_information(bool summary);
 extern int report_frequency;
 extern int iprofiler;
 

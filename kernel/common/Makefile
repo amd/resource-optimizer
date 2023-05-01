@@ -17,6 +17,7 @@ CLANG_FLAGS = -I. \
 	-I$(KDIR)/tools/lib \
 	-I$(KDIR)/include/uapi \
 	-I$(KDIR)/include/generated/uapi \
+	-I$(KDIR)/arch/$(ARCH)/events \
 	-I$(KDIR)/arch/$(ARCH)/include \
 	-I$(KDIR)/arch/$(ARCH)/include/generated \
 	-I$(KDIR)/arch/$(ARCH)/include/uapi \

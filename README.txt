@@ -58,4 +58,8 @@ To build memory balancer application:
 cd membalancer
 make
 
+To build profiler:
+cd profiler
+make
+
 Currently the kernel part of the tool has a hard dependency with Linux kernel code. This is due to the absence of a eBPF kernel API to get parent process identifier which is required for balancing memory of progress-like multi-process application which creates processes on demand. This hard dependency maybe relaxed in future.

@@ -289,6 +289,7 @@ static bool valid_pid(pid_t pid)
 #include "../amd/generic_kern_amd.c"
 #include "memstats_kern.c"
 #include "processtats_kern.c"
+#include "lbr_kern.c"
 #include "heap_kern.c"
 
 char _license[] SEC("license") = "GPL";

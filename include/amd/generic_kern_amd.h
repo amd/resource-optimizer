@@ -101,4 +101,7 @@ struct value_op {
 	u32 filler;
 };
 
+#define MAX_LBR_ENTRIES_ZEN4 16
+#define MAX_LBR_ENTRIES MAX_LBR_ENTRIES_ZEN4
+
 #endif

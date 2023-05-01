@@ -68,6 +68,8 @@ static int init_numa_node(void **fpout)
 	int i;
 
 	fp = popen("/usr/bin/cat /proc/zoneinfo|/usr/bin/grep start_pfn", "r");
+	if (!fp)
+		return -errno;
 	i = 0;
 	while (fgets(buffer, sizeof(buffer) - 1, fp)) {
 		if (i++ >= 1)

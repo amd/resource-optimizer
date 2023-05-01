@@ -46,7 +46,7 @@ struct {
 } ibs_op_map SEC(".maps");
 
 static void inc_resource_usage(const int node,
-					volatile u32 counts[MAX_NUMA_NODES])
+			       volatile u32 counts[MAX_NUMA_NODES])
 {
 	if (!VALID_NODE(node))
 		return;
