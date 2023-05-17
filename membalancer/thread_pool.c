@@ -56,8 +56,8 @@ int threadpool_create(threadpool_t *tp, int num_threads)
 		return -ENOMEM;
 	}
 
-	tp->thread_count = num_threads;
 	tp->stop = false;
+	tp->thread_count = num_threads;
 	pthread_mutex_init(&tp->work_mutex, NULL);
 	pthread_cond_init(&tp->work_cond, NULL);
 	pthread_cond_init(&tp->working_cond, NULL);

@@ -86,7 +86,7 @@ static void deinit_numa_node(void *handle)
 {
 	FILE *fp = handle;
 
-	fclose(fp);
+	pclose(fp);
 }
 
 static int get_next_numa_distance(char **distance)

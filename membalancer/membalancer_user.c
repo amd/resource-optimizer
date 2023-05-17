@@ -72,6 +72,8 @@
 #define MIN_MIGRATED_PAGES 	1024
 #define MIN_MIGRATED_PAGES_TIER 4096
 
+
+threadpool_t threadpool;
 int nr_cpus;
 static double min_pct = 0.01;
 static bool user_space_only = false;
@@ -116,11 +118,13 @@ atomic64_t fetch_cnt, op_cnt, pages_migrated;
 #define MAX_PAGES_PER_CALL 65536
 #define PAGE_MOVERS 8
 #define IBS_SAMPLE_WORKERS 1
-
+/*
+ * Extra two threads for update_node_loadavg and
+ * update_per_node_freemem functions.
+ */
 #define THREAD_COUNT (PAGE_MOVERS + IBS_SAMPLE_WORKERS + 2)
 
 struct page_list {
-	struct page_list *next;
 	int pages;
 	pid_t pid;
 	unsigned long pagelist[PAGES_PER_CALL];
@@ -128,32 +132,16 @@ struct page_list {
 	int           status[PAGES_PER_CALL];
 };
 
-struct page_mover {
-	pthread_mutex_t   mtx;
-	pthread_cond_t    cv;
-	struct page_list *head;
-	struct page_list *tail;
-	pthread_t         thread;
-	int stop;
-};
-
 struct ibs_sample_worker {
-	pthread_mutex_t   mtx;
-	pthread_cond_t    cv;
-	pthread_t         thread;
-	int stop;
 	int *map_fd;
 	int msecs;
-	int worker;
 };
 
-static struct page_mover page_mover[PAGE_MOVERS];
-static struct ibs_sample_worker ibs_worker[IBS_SAMPLE_WORKERS];
-static atomic64_t ibs_workers;
+static struct ibs_sample_worker ibs_worker;
 static atomic64_t ibs_pending_fetch_samples;
 static atomic64_t ibs_pending_op_samples;
 
-static void * page_move_function(void *arg);
+static void page_move_function(void *arg);
 static unsigned long upgrade_align   = 256 * PAGE_SIZE;
 static unsigned long downgrade_align = 256 * PAGE_SIZE;
 
@@ -271,60 +259,13 @@ static void ibs_fetchop_config_set(void)
 			   MIN_IBS_CLASSIC_SAMPLES;
 }
 
-static int init_page_mover(void)
-{
-	int i, err;
-
-	for (i = 0; i < PAGE_MOVERS; i++) {
-		pthread_mutex_init(&page_mover[i].mtx, NULL);
-		pthread_cond_init(&page_mover[i].cv, NULL);
-		page_mover[i].head = NULL;
-		page_mover[i].tail = NULL;
-		page_mover[i].stop = 0;
-
-		if (pthread_create(&page_mover[i].thread, NULL,
-				   page_move_function, (void *)(long)i)) {
-			err = -ENOMEM;
-		}
-	}
-
-	if (i == PAGE_MOVERS)
-		return 0;
-
-	while (i >= 0) {
-		pthread_mutex_lock(&page_mover[i].mtx);
-		page_mover[i].stop = 1;
-		pthread_cond_signal(&page_mover[i].cv);
-		pthread_mutex_unlock(&page_mover[i].mtx);
-	}
-
-	return err;
-}
-
 static void page_mover_enqueue(struct page_list *page)
 {
-	static int next_queue;
-	int next;
-	struct page_mover *mover;
+	int err;
 
-	next = next_queue;
-	mover = &page_mover[next];
-
-	++next_queue;
-	next_queue %= PAGE_MOVERS;
-
-	assert(page->next == NULL);
-
-	pthread_mutex_lock(&mover->mtx);
-	if (mover->head == NULL) {
-		//assert(mover->tail == NULL);
-		mover->head = mover->tail = page;
-	} else {
-		mover->tail->next = page;
-		mover->tail = page;
-	}
-	pthread_cond_signal(&mover->cv);
-	pthread_mutex_unlock(&mover->mtx);
+	err = threadpool_add_work(&threadpool, page_move_function, page);
+	if (err)
+		printf("Failed to add work to threadpool, error %d\n", err);
 }
 
 static void page_mover_parallel_enqueue(struct page_list *list,
@@ -346,7 +287,7 @@ static void page_mover_parallel_enqueue(struct page_list *list,
 		k = 0;
 		newlist = malloc(sizeof(*newlist));
 		assert(newlist);
-		for (j = 0; j < pages; j++) {	
+		for (j = 0; j < pages; j++) {
 
 			newlist->pagelist[k] = page + j * PAGE_SIZE;
 			newlist->nodelist[k] = list->nodelist[i];
@@ -356,7 +297,6 @@ static void page_mover_parallel_enqueue(struct page_list *list,
 				continue;
 
 			newlist->pages = k;
-			newlist->next = NULL;
 			newlist->pid = list->pid;
 			page_mover_enqueue(newlist);
 			k = 0;
@@ -368,85 +308,43 @@ static void page_mover_parallel_enqueue(struct page_list *list,
 	free(list);
 }
 
-static void * page_move_function(void *arg)
+static void page_move_function(void *arg)
 {
-	int queue = (int)(long)arg;
-	int count = 0;
-	int err __attribute__((unused));
-	struct page_mover *mover;
 	struct page_list *page;
-	struct timeval start, end;
+	int err __attribute__((unused));
+	int i;
 
-	mover = &page_mover[queue];
+	page = (struct page_list*)arg;
 
-	pthread_mutex_lock(&mover->mtx);
-	do {
-		while (!mover->head && !mover->stop) {
-			pthread_cond_wait(&mover->cv, &mover->mtx);
-			gettimeofday(&start, NULL);
-		}
+	assert(page->pages);
 
-		if (!mover->head && mover->stop)
-			break;
+	err = move_pages(page->pid, page->pages,
+			(void **)&page->pagelist,
+			page->nodelist,
+			page->status,
+			MPOL_MF_MOVE_ALL);
 
-		assert(mover->head);
-		page = mover->head;
-		
-		if (mover->head == mover->tail) {
-			mover->head = mover->tail = NULL;
-		} else {
-			mover->head = mover->head->next;
-		}
-		pthread_mutex_unlock(&mover->mtx);
+	for (i = 0; i < page->pages; i++) {
+		if (page->status[i] == 0)
+			atomic64_inc(&pages_migrated);
+	}
 
-		assert(page->pages);
-
-		err = move_pages(page->pid,  page->pages,
-				(void **)&page->pagelist,
-				page->nodelist,
-				page->status,
-				MPOL_MF_MOVE_ALL);
-		count++;
-
-		if (!(count % 10)) {
-			gettimeofday(&end, NULL);
-			if (milliseconds_elapsed(&start, &end) >= 100) {
-				end = start;
-				usleep(50000);
-			}
-		}
-		{
-			int i;
-			for (i = 0; i < page->pages; i++) {
-				if (page->status[i] == 0)
-					atomic64_inc(&pages_migrated);
-			}
-		}
-
-#ifdef DEBUG_ON	
-		assert(err >= 0);
-		{
-			int i;
-			for (i = 0; i < page->pages; i++) {
-				if (page->status[i] == -EFAULT)
-					continue;
-				if (page->status[i] != page->nodelist[i])
-					printf("Error %d-%d\n",
+#ifdef DEBUG_ON
+	assert(err >= 0);
+	{
+		for (i = 0; i < page->pages; i++) {
+			if (page->status[i] == -EFAULT)
+				continue;
+			if (page->status[i] != page->nodelist[i])
+				printf("Error %d-%d\n",
 						page->status[i],
 						page->nodelist[i]);
-	
-				assert(page->status[i] == page->nodelist[i]);
-			}
-		}	
+
+			assert(page->status[i] == page->nodelist[i]);
+		}
+	}
 #endif
-		free(page);
-		pthread_mutex_lock(&mover->mtx);
-
-	} while (mover->head || !mover->stop);
-
-	pthread_mutex_unlock(&mover->mtx);
-
-	return NULL;
+	free(page);
 }
 
 static unsigned long peek_ibs_samples(int fd, unsigned long old,
@@ -899,7 +797,7 @@ void update_sample_statistics(unsigned long *samples, bool fetch)
 		update_sample_statistics_numa(samples, fetch);
 }
 
-static void process_samples(int *map_fd, int msecs, int fetch)
+static void process_samples(int *map_fd, int msecs, bool fetch)
 {
 	struct bst_node *root = NULL;
 	__u64 total_freq_fetch, total_freq_op;
@@ -1013,108 +911,50 @@ static bool ibs_pending_samples(void)
 	return false;
 }
 
-static void * ibs_sample_worker_function(void *arg)
+static void ibs_sample_worker_function(void *arg)
 {
+	static int light_semaphore;
 	struct ibs_sample_worker *worker = arg;
-	int counter = 0;
 
-	atomic64_inc(&ibs_workers);
-	pthread_mutex_lock(&worker->mtx);
-	do {
-		while (!ibs_pending_samples() && !worker->stop) {
-			pthread_cond_wait(&worker->cv, &worker->mtx);
-			counter = 0;
-		}
+	/*
+	 * No multiple instances of sample processing for now.
+	 * However we could process fetch and op samples in
+	 * parallel without integrity issues.
+	 */
+	if (atomic_cmxchg(&light_semaphore, 0, 1))
+		return;
 
-		if (!ibs_pending_samples() && worker->stop)
-			break;
-		pthread_mutex_unlock(&worker->mtx);
-
-		if (IBS_SAMPLE_WORKERS == 1)
-			process_samples(worker->map_fd, worker->msecs, 0);
-
-		process_samples(worker->map_fd, worker->msecs, worker->worker);
-
-		counter++;
-		if (counter == 4) { 
-			usleep(worker->msecs * 1000 / 4);
-			counter = 0;
-		}
-		pthread_mutex_lock(&worker->mtx);
-
-	} while(1);
-	pthread_mutex_unlock(&worker->mtx);
-
-	atomic64_dec(&ibs_workers);
-
-	pthread_mutex_lock(&worker[0].mtx);
-	pthread_cond_signal(&worker[0].cv);
-	pthread_mutex_unlock(&worker[0].mtx);
-
-
-	return NULL;
-}
-
-static void deinit_ibs_sample_worker(int workers)
-{
-	int i = 0;
-
-	for (i = 0; i < workers; i++) {
-		pthread_mutex_lock(&ibs_worker[i].mtx);
-		ibs_worker[i].stop = 1;
-		pthread_cond_signal(&ibs_worker[i].cv);
-		pthread_mutex_unlock(&ibs_worker[i].mtx);
+	if (ibs_pending_samples()) {
+		process_samples(worker->map_fd, worker->msecs, false);
+		process_samples(worker->map_fd, worker->msecs, true);
 	}
 
-	while (atomic64_read(&ibs_workers) > 0) {
-		pthread_mutex_lock(&ibs_worker[0].mtx);
-		pthread_cond_wait(&ibs_worker[0].cv, &ibs_worker[0].mtx);
-		pthread_mutex_unlock(&ibs_worker[0].mtx);
-	}
+	assert(atomic_cmxchg(&light_semaphore, 1, 0) == 1);
 }
 
-static int init_ibs_sample_worker(int *map_fd,
+static void init_ibs_sample_worker(int *map_fd,
 				   int msecs)
 {
-	int i;
-
-	static_assert(IBS_SAMPLE_WORKERS >= 1 && IBS_SAMPLE_WORKERS <= 2,
-		     "IBS_SAMPLE_WORKERS can either 1 or 2");
-
-	for (i = 0; i < IBS_SAMPLE_WORKERS; i++) {
-		pthread_mutex_init(&ibs_worker[i].mtx, NULL);
-		pthread_cond_init(&ibs_worker[i].cv, NULL);
-		ibs_worker[i].map_fd = map_fd;
-		ibs_worker[i].msecs  = msecs;
-		ibs_worker[i].worker = IBS_SAMPLE_WORKERS - i;
-
-		if (pthread_create(&ibs_worker[i].thread, NULL, 
-				    ibs_sample_worker_function,
-				    (void *)&ibs_worker[i]))
-			break;
-	}
-
-	if (i == IBS_SAMPLE_WORKERS)
-		return 0;
-
-	deinit_ibs_sample_worker(i);
-
-	return -1;
+	ibs_worker.map_fd = map_fd;
+	ibs_worker.msecs  = msecs;
 }
 
-static void ibs_process_samples(struct ibs_sample_worker *worker,
-				unsigned long fetch_cnt, unsigned long op_cnt)
+static void ibs_process_samples(unsigned long fetch_cnt,
+				unsigned long op_cnt)
 {
-	int i;
+	int err;
 
 	atomic64_add(&ibs_pending_fetch_samples, fetch_cnt);
 	atomic64_add(&ibs_pending_op_samples, op_cnt);
 
-	for (i = 0; i < IBS_SAMPLE_WORKERS; i++) {
-		pthread_mutex_lock(&worker[i].mtx);
-		pthread_cond_signal(&worker[i].cv);
-		pthread_mutex_unlock(&worker[i].mtx);
-	}
+	if (!ibs_pending_samples())
+		return;
+
+	err = threadpool_add_work(&threadpool,
+			ibs_sample_worker_function, &ibs_worker);
+	if (err)
+		printf("Failed to add work to threadpool, error %d\n", err);
+
 	/* Increment the sampling count,be it fetch or op */
 	sampling_iter++;
 }
@@ -1343,9 +1183,6 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 	unsigned long ibs_samples_old = 0, pages_migrated_old = 0;
 	enum tuning_mode tuning_mode_old = tuning_mode;
 	struct timeval start;
-	threadpool_t threadpool;
-
-	memset(&threadpool, 0, sizeof(threadpool_t));
 
 	fetch_links = calloc(nr_cpus, sizeof(struct bpf_link *));
 	if (!fetch_links) {
@@ -1465,14 +1302,14 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 		(l3miss) ? "MISS Filter" : "CLASSIC");
 	printf("%s", NORM);
 
-	err = init_ibs_sample_worker(map_fd, msecs);
-	assert(err == 0);
+	err = threadpool_create(&threadpool, THREAD_COUNT);
+	if (err)
+		goto cleanup;
+
+	init_ibs_sample_worker(map_fd, msecs);
 
 	if (trace_dir) {
 		err = tracer_init(trace_dir);
-		assert(err == 0);
-	} else {
-		err = init_page_mover();
 		assert(err == 0);
 	}
 
@@ -1483,10 +1320,6 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 
 	signal(SIGINT, interrupt_signal);
 	gettimeofday(&start, NULL);
-
-	err = threadpool_create(&threadpool, THREAD_COUNT);
-	if (err)
-		goto cleanup;
 
 	while (!err) {
 		if (tuning_mode_old != tuning_mode) {
@@ -1529,6 +1362,7 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 			else
 				fprintf(stderr,
 					"IBS OP sampling not supported\n");
+			goto cleanup;
 		}
 
 		err = ibs_fetch_sampling_begin(freq, prog[IBS_CODE_SAMPLER],
@@ -1602,25 +1436,27 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 		if (op_links)
 			ibs_sampling_end(op_links);    /* IBS op */
 
+		if(err)
+			goto cleanup;
+
 		if (do_migration && !(tuning_mode & MEMORY_MOVE)) {
 			err = threadpool_add_work(&threadpool,
 						  update_node_loadavg, NULL);
 			if (err)
-					goto cleanup;
+				goto cleanup;
 		}
 		err = threadpool_add_work(&threadpool,
 					   update_per_node_freemem, NULL);
 		if (err)
 			goto cleanup;
 
-		ibs_process_samples(ibs_worker, fetch_cnt, op_cnt);
+		ibs_process_samples(fetch_cnt, op_cnt);
 
 		usleep(msecs * 1000 / maximizer_mode);
 	}
-	balancer_cleanup(map_fd[IBS_FETCH_MAP], map_fd[IBS_OP_MAP]);
 
 cleanup:
-	deinit_ibs_sample_worker(atomic64_read(&ibs_workers));
+	balancer_cleanup(map_fd[IBS_FETCH_MAP], map_fd[IBS_OP_MAP]);
 	terminate_additional_bpf_programs();
 
 	if (fetch_links)
