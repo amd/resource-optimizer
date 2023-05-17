@@ -147,7 +147,6 @@ struct ibs_sample_worker {
 	int worker;
 };
 
-
 static struct page_mover page_mover[PAGE_MOVERS];
 static struct ibs_sample_worker ibs_worker[IBS_SAMPLE_WORKERS];
 static atomic64_t ibs_workers;

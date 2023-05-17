@@ -118,6 +118,7 @@ int ibs_op_event(struct bpf_perf_event_data *ctx,
 	return 0;
 }
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 22))
 int amd_lbr_sampler(struct bpf_perf_event_data *ctx,
 		    struct perf_branch_entry **firstentryout,
 		    int *entries, u64 *tgidout)
@@ -156,6 +157,14 @@ int amd_lbr_sampler(struct bpf_perf_event_data *ctx,
 
 	return 0;
 }
+#else
+int amd_lbr_sampler(struct bpf_perf_event_data *ctx,
+		    struct perf_branch_entry **firstentryout,
+		    int *entries, u64 *tgidout)
+{
+	return -EINVAL;
+}
+#endif
 
 int amd_lbr_sampler_entry(struct perf_branch_entry *src,
 			  struct perf_branch_entry *dst)

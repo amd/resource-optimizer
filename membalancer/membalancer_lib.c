@@ -91,7 +91,7 @@ int get_ibs_device_type(const char *dev)
 	ret = read(fd, &buffer, sizeof(buffer));
 	close(fd);
 
-	if (ret < sizeof(buffer))
+	if (ret < 0)
 		return -errno;
 
 	return atoi(buffer);
