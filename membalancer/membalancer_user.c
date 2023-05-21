@@ -1547,10 +1547,9 @@ int main(int argc, char **argv)
 	char *include_ppids = NULL;
 	char *include_cpus = NULL;
 	char buffer[256];
-	cpu_set_t *cpusetp;
 	size_t size;
 
-	nr_cpus = sysconf(_SC_NPROCESSORS_ONLN);
+	nr_cpus = sysconf(_SC_NPROCESSORS_CONF);
 
 	if (!cpuvendor_supported()) {
 		printf("CPU vendor not supported\n");

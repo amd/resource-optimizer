@@ -65,6 +65,7 @@ struct ibs_op_sample {
 extern int idle_cpu_cnt[MAX_NUMA_NODES];
 extern int nr_cpus;
 extern threadpool_t tp;
+extern cpu_set_t *cpusetp;
 
 struct cpu_utilinfo {
 	int cpu;
@@ -88,6 +89,8 @@ enum {
 
 void update_node_loadavg(void *);
 int get_node_loadavg(int node);
+void set_idle_cpu(int cpu, int node);
+int get_next_idle_cpu(int node);
 
 extern bool histogram_format;
 extern int report_frequency;

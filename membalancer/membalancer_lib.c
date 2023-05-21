@@ -200,7 +200,7 @@ static bool is_cpu_online(int cpu)
 	if (ret < 0)
 		return false;
 
-	return online;
+	return online - '0';
 }
 
 static const char *next_token(const char *q,  int sep)
@@ -296,6 +296,9 @@ int parse_cpulist(const char *cpu_list, cpu_set_t *cpusetp, size_t set_size)
 		}
 		if (from > to)
 			return -EINVAL;
+
+		/* CPU 0 can't be disabled */
+		if (from++ == 0) CPU_SET_S(0, set_size, cpusetp);
 
 		while (from <= to) {
 			if (from >= nr_cpus)
@@ -512,8 +515,6 @@ static int populate_cpu_map(struct bpf_object *obj, int fd, int node,
 
 		if (next_cpuset == ',')
 			continue;
-
-		assert(next_cpuset == 'f');
 
 		for (j = 0; j < 4; j++) {
 			next_cpu = k * 4 + j;

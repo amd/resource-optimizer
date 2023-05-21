@@ -18,6 +18,7 @@ PROCESS_STATS := processtats_user.o
 GETPADDR:= getpaddr.o
 LIBS  := ${LIBBPF}/src/libbpf.so -lz -lelf -lnuma -lpthread -lrt
 DEFS = -DMEMBALANCE_FORK
+#CPU_MIG_DEF = -DCPU_LEVEL_MIG
 #DEFS = -DUSE_PAGEMAP
 #DEFS = -DCCMD_SOFTWARE_SAMPLING
 
@@ -47,9 +48,9 @@ processtats_user.o: processtats_user.c
 %_tracer.o: %_tracer.c
 	$(CLANG) -c $<  ${USR_INCLUDE} -mcmodel=large
 %_utils.o: %_utils.c
-	$(CLANG) -c $<  ${USR_INCLUDE} -mcmodel=large 
+	$(CLANG) -c $<  ${USR_INCLUDE} -mcmodel=large ${CPU_MIG_DEF}
 %_migrate.o: %_migrate.c
-	$(CLANG) -c $<  ${USR_INCLUDE}
+	$(CLANG) -c $<  ${USR_INCLUDE} ${CPU_MIG_DEF}
 heap_user.o: heap_user.c
 	$(CLANG) -c $<  ${USR_INCLUDE}
 thread_pool.o: thread_pool.c

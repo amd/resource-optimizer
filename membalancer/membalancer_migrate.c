@@ -38,6 +38,8 @@
 #include "membalancer_numa.h"
 #include "membalancer_migrate.h"
 
+#define NUMA_HOP_THRESHOLD 2
+
 cpu_set_t node_cpumask[MAX_NUMA_NODES];
 
 struct  ibs_noderef_sample numa_reference[MAX_PROCESS_STATS_IDX];
@@ -46,6 +48,19 @@ static inline bool node_busy(int node)
 {
 	if (get_node_loadavg(node) < node_load_avg_threshold)
 		return false;
+	return true;
+}
+
+static inline bool acceptable_distance(int reference_node, int curr_node)
+{
+	if (reference_node == curr_node)
+		return true;
+
+	if ((numa_table[reference_node].distance[curr_node] /
+		numa_table[reference_node].distance[reference_node])
+		>= NUMA_HOP_THRESHOLD)
+		return false;
+
 	return true;
 }
 
@@ -64,19 +79,23 @@ static inline int target_cpu_node_get(int curr_target)
 		return err;
 
 	for (i = 0; i < count; i++) {
-		if (!node_busy(nodes[i]))
+		if (!node_busy(nodes[i]) &&
+			acceptable_distance(curr_target, nodes[i]))
 			return nodes[i];
 	}
 	return -EINVAL;
 }
 
-static inline bool get_migrate_token(int target_node)
+static inline bool get_migrate_token(int target_node, int *target_cpu)
 {
 	/* This is based on idle cpu available for the node.
 	 * The idle cpu capacity is already
 	 * throttled by migration_throttle_limit.
 	 */
 	if (idle_cpu_cnt[target_node]) {
+#ifdef CPU_LEVEL_MIG
+		*target_cpu = get_next_idle_cpu(target_node);
+#endif
 		idle_cpu_cnt[target_node]--;
 		return true;
 	}
@@ -90,9 +109,48 @@ static int data_cmp(const void *p1, const void *p2)
 	return s1->max_ref - s2->max_ref;
 }
 
+#ifdef CPU_LEVEL_MIG
+static int inline membalancer_sched_setaffinity(pid_t pid,
+					int target_node,
+					int target_cpu,
+					cpu_set_t *set)
+{
+	int err;
+
+	CPU_SET(target_cpu, set);
+	err = sched_setaffinity(pid, sizeof(cpu_set_t), set);
+	CPU_CLR(target_cpu, set);
+
+	if (verbose > 3)
+		printf("Attempted migration with per cpu: "
+		       "to cpu=%d, sts=%d\n",target_cpu, err);
+
+	return err;
+}
+#else
+static int inline membalancer_sched_setaffinity(pid_t pid,
+					int target_node,
+					int target_cpu,
+					cpu_set_t *set)
+{
+	int err;
+
+	err = sched_setaffinity(pid, sizeof(cpu_set_t),
+			&node_cpumask[target_node]);
+
+	if (verbose > 3)
+		printf("Attempted migration with node cpus: "
+		       "node =%d, sts=%d\n",target_node, err);
+
+	return err;
+}
+#endif
+
 int move_process(u32 max_count, bool sort)
 {
 	int target_node;
+	int target_cpu;
+	cpu_set_t set;
 	int i;
 	u64 pid;
 	int err = 0;
@@ -103,6 +161,8 @@ int move_process(u32 max_count, bool sort)
 
 	if (!max_count)
 		return 0;
+
+	CPU_ZERO(&set);
 
 	if (sort)
 		qsort(numa_reference, max_count,
@@ -126,13 +186,15 @@ int move_process(u32 max_count, bool sort)
 		 * Good that we have found node with some room.
 		 * Check if some cpus are really idle.
 		 */
-		if (!get_migrate_token(target_node)) {
+		if (!get_migrate_token(target_node, &target_cpu)) {
 			skipped_migrate++;
 			continue;
 		}
 
-	    err = sched_setaffinity((pid_t)pid, sizeof(cpu_set_t),
-						&node_cpumask[target_node]);
+		err = membalancer_sched_setaffinity((pid_t)pid,
+				target_node,
+				target_cpu,
+				&set);
 
 		if (err && (verbose > 3))
 			printf("ERROR:TID %d (PID:%d) migration failed."

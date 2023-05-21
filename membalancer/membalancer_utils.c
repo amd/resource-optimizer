@@ -26,6 +26,7 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
  */
+#define _GNU_SOURCE
 #include<string.h>
 #include<stdint.h>
 #include<cpuid.h>
@@ -40,6 +41,7 @@
 #include<stdatomic.h>
 #include<time.h>
 #include<signal.h>
+#include <sched.h>
 
 #include "thread_pool.h"
 #include "membalancer_utils.h"
@@ -53,6 +55,24 @@ enum {
     /*  VENDOR_INTEL, */
 	MAX_VENDOR_ID,
 };
+
+cpu_set_t *cpusetp;
+
+#ifdef CPU_LEVEL_MIG
+
+#define num_dword 8
+
+typedef int  dword_t;
+
+#define BITS_PER_DWORD  (sizeof(dword_t) * CHAR_BIT)
+
+struct free_cpu {
+    int free_cpu_map[num_dword];
+};
+
+struct free_cpu per_node_free_cpu[MAX_NUMA_NODES];
+
+#endif
 
 extern int timer_clock;
 static struct cpu_utilinfo snap1[MAX_CPU_CORES];
@@ -213,8 +233,18 @@ static int get_cpu_util(struct cpu_utilinfo *cpuutil)
 	if (!fp)
 		return -errno;
 
-	fgets(str, 100, fp);
-	while (idx < nr_cpus && fgets(str, 100, fp) != NULL) {
+	if (fgets(str, 100, fp) == NULL)
+		return -EINVAL;
+
+	while (idx < nr_cpus) {
+
+		if(!CPU_ISSET(idx, cpusetp)) {
+			idx++;
+			continue;
+		}
+		if (fgets(str, 100, fp) == NULL)
+			break;
+
 		token = strtok(str,d);
 		totaltime = 0;
 		idletime = 0;
@@ -291,8 +321,12 @@ static void cpu_loadavg(union sigval timer_data)
 		double util  = 100.0 * (1.0 - idle_delta / total_delta);
 		numa_node_loadavg[node] += util;
 
-		if ((100 - util) > cpu_idle_threshold)
+		if ((100 - util) > cpu_idle_threshold) {
 			idle_cpu_cnt[node]++;
+#ifdef CPU_LEVEL_MIG
+			set_idle_cpu(cpu, node);
+#endif
+		}
 	}
 
 	for (i = 0; i < max_nodes; i++) {
@@ -324,7 +358,9 @@ void update_node_loadavg(void *arg)
 	memset(snap1, 0, MAX_CPU_CORES * sizeof(struct cpu_utilinfo));
 	memset(idle_cpu_cnt, 0, MAX_NUMA_NODES * sizeof(int));
 	memset(numa_node_loadavg, 0, MAX_NUMA_NODES * sizeof(double));
-
+#ifdef CPU_LEVEL_MIG
+	memset(per_node_free_cpu, 0, max_nodes * sizeof(struct free_cpu));
+#endif
 	err = get_cpu_util(snap1);
 	if (err) {
 		atomic_store(&error_status, 1);
@@ -348,3 +384,47 @@ int get_node_loadavg(int node)
 
 	return numa_node_loadavg[node];
 }
+
+#ifdef CPU_LEVEL_MIG
+
+void set_idle_cpu(int cpu, int node) {
+	int *dword_val;
+	int *cpu_map;
+	int dword_idx;
+
+	cpu_map = per_node_free_cpu[node].free_cpu_map;
+	dword_idx = cpu/BITS_PER_DWORD;
+	dword_val = &cpu_map[dword_idx];
+	*dword_val |= ( (unsigned)1 << (cpu & (BITS_PER_DWORD -1)));
+}
+
+int get_next_idle_cpu(int node)
+{
+	int *cpu_map;
+	cpu_map = per_node_free_cpu[node].free_cpu_map;
+
+	int *dword_val;
+	int fetched_cpu = -EINVAL;
+
+	for (int i = 0; i < num_dword; i++ ) {
+		dword_val = &cpu_map[i];
+		if (!*dword_val)
+			continue;
+
+		fetched_cpu = __builtin_ffs(*dword_val);
+		fetched_cpu -= 1;
+		fetched_cpu += i * BITS_PER_DWORD;
+		break;
+	}
+
+	if (fetched_cpu == -EINVAL)
+		return -EINVAL;
+
+	assert((fetched_cpu >= 0) && (fetched_cpu < MAX_CPU_CORES));
+
+	/* Mark it busy */
+	*dword_val &= (*dword_val -1);
+
+	return fetched_cpu;
+}
+#endif
