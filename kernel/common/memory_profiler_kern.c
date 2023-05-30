@@ -14,8 +14,8 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
- * IBS sampler : Arm IBS fetch and op sampling, collect both kernel and
- * process samples.
+ * code and data sampler : Architectural independent functions for code and
+ * data sampling.
  */
 #include <linux/version.h>
 #include <uapi/linux/types.h>
@@ -26,7 +26,8 @@
 #include <bpf/bpf_helpers.h>
 #include <linux/perf_event.h>
 #include <bpf/bpf_helpers.h>
-#include "membalancer_common.h"
+#include "memory_profiler_arch.h"
+#include "memory_profiler_common.h"
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -64,18 +65,18 @@ struct {
 } cpu_map SEC(".maps");
 
 struct {
-        __uint(type, BPF_MAP_TYPE_HASH);
-        __type(key, int);
-        __type(value, u64);
-        __uint(max_entries, 1);
-} fetch_counter SEC(".maps");
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, int);
+	__type(value, u64);
+	__uint(max_entries, 1);
+} code_samples_counter SEC(".maps");
 
 struct {
-        __uint(type, BPF_MAP_TYPE_HASH);
-        __type(key, int);
-        __type(value, u64);
-        __uint(max_entries, 1);
-} op_counter SEC(".maps");
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, int);
+	__type(value, u64);
+	__uint(max_entries, 1);
+} data_samples_counter SEC(".maps");
 
 static int check_ppid = -1;
 static bool per_numa_access_stats = true;
@@ -88,15 +89,10 @@ static bool user_space_only = false;
 unsigned long my_page_size;
 unsigned int defer_cnt;
 
-static volatile u64 ibs_fetches, ibs_ops;
+static volatile u64 code_samples_cnt, data_samples_cnt;
 static bool processtats;
 
-static void save_fetch_latency(u64 reg, struct value_fetch *valuep);
-static void save_op_latency(u64 reg, struct value_op *valuep);
 static void save_node_usage(volatile u32 counts[MAX_NUMA_NODES]);
-static int process_fetch_samples(u64 tgid,
-				 struct value_fetch *fetch_data,
-                                 u64 ip, u32 page_size);
 static void load_numa_ranges(void);
 
 static void init_function(void)
@@ -185,24 +181,24 @@ static void init_function(void)
 	}
 }
 
-static inline void inc_ibs_fetch_samples(int val)
+static inline void inc_code_samples(int val)
 {
-        int key = 0;
+	int key = 0;
 	u64 value;
 
-	ATOMIC64_ADD(&ibs_fetches, val);
-	value = ATOMIC64_READ(&ibs_fetches);
-        bpf_map_update_elem(&fetch_counter, &key, &value, BPF_ANY);
+	ATOMIC64_ADD(&code_samples_cnt, val);
+	value = ATOMIC64_READ(&code_samples_cnt);
+	bpf_map_update_elem(&code_samples_counter, &key, &value, BPF_ANY);
 }
 
-static inline void inc_ibs_op_samples(int val)
+static inline void inc_data_samples(int val)
 {
-        int key = 0;
+	int key = 0;
 	u64 value;
 
-	ATOMIC64_ADD(&ibs_ops, val);
-	value = ATOMIC64_READ(&ibs_ops);
-        bpf_map_update_elem(&op_counter, &key, &value, BPF_ANY);
+	ATOMIC64_ADD(&data_samples_cnt, val);
+	value = ATOMIC64_READ(&data_samples_cnt);
+	bpf_map_update_elem(&data_samples_counter, &key, &value, BPF_ANY);
 }
 
 int cpu_node_get(void)
@@ -286,10 +282,19 @@ static bool valid_pid(pid_t pid)
 	return valid_pid_with_task(pid, NULL);
 }
 
-#include "../amd/generic_kern_amd.c"
+#ifdef CPU_AMD_X8664
+#include "../arch/x86/amd/memory_profiler.c"
+#include "../arch/x86/amd/lbr_profiler.c"
+#else
+#include "../arch/x86/others/memory_profiler.c"
+#include "../arch/x86/others/lbr_profiler.c"
+#endif
+
 #include "memstats_kern.c"
 #include "processtats_kern.c"
 #include "lbr_kern.c"
 #include "heap_kern.c"
+
+
 
 char _license[] SEC("license") = "GPL";

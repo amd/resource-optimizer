@@ -32,8 +32,9 @@
 #include<stdlib.h>
 #include<sched.h>
 #include <errno.h>
-
-#include "membalancer_common.h"
+#include "memory_profiler_common.h"
+#include "memory_profiler_arch.h"
+#include "thread_pool.h"
 #include "membalancer_utils.h"
 #include "membalancer_numa.h"
 #include "membalancer_migrate.h"

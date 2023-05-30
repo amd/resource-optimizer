@@ -18,20 +18,13 @@
  * data (if available) samples.
  */
 
-#ifndef _MEMBALANCER_PVT_H_
-#define _MEMBALANCER_PVT_H_
+#ifndef _MEMORY_PROFILER__PVT_H_
+#define _MEMORY_PROFILER__PVT_H_
 unsigned long my_page_size;
-int ibs_op_event(struct bpf_perf_event_data *ctx,
-		 struct value_op *op_data,
-		 u64 *tgid, u64 *ip);
-int ibs_fetch_event(struct bpf_perf_event_data *ctx,
-		    struct value_fetch *fetch_data,
-		    u64 *tgid, u64 *ip);
-
 struct value_latency * get_value_latency(void);
 struct process_stats * alloc_process_stats(void);
-struct value_op * alloc_value_op(void);
-struct value_fetch * alloc_value_fetch(void);
+struct data_sample * alloc_data_sample(void);
+struct code_sample * alloc_code_sample(void);
 static void init_function(void);
 int amd_lbr_sampler(struct bpf_perf_event_data *ctx,
                     struct perf_branch_entry **firstentryout,

@@ -57,14 +57,14 @@
 #include <ctype.h>
 #include <search.h>
 #include <sched.h>
-
-#include "membalancer_common.h"
+#include "memory_profiler_common.h"
+#include "memory_profiler_arch.h"
+#include "thread_pool.h"
 #include "membalancer_utils.h"
 #include "membalancer_numa.h"
 #include "membalancer_migrate.h"
 #include "heap_user.h"
 #include "membalancer_user.h"
-#include "thread_pool.h"
 #include "membalancer_lib.h"
 
 #define MEMB_CLOCK 25
@@ -89,7 +89,7 @@ static float maximizer_mode = 0.2;
 int report_frequency = 1;
 static char *trace_dir;
 bool tracer_physical_mode = true;
-unsigned int min_ibs_samples = MIN_IBS_CLASSIC_SAMPLES;
+unsigned int min_samples = MIN_CLASSIC_SAMPLES;
 static int migration_timeout_sec = 60;
 static int min_migrated_pages = MIN_MIGRATED_PAGES;
 
@@ -105,24 +105,24 @@ static u32 sampling_interval_cnt = 100;
 static u32 sampling_iter;
 bool proc_data_sampling_done = false;
 u32 curr_proc_data_map_idx;
-static char * ebpf_object_dir = "../kernel/common/";
+static char * ebpf_object_dir = "../bin/";
 
 static int min_freemem_pct = 10;
 
-atomic64_t fetch_cnt, op_cnt, pages_migrated;
+atomic64_t status_code_cnt, status_data_cnt, status_pages_migrated;
 
 #define IBS_FETCH_DEV "/sys/devices/ibs_fetch/type"
 #define IBS_OP_DEV    "/sys/devices/ibs_op/type"
 
 #define PAGES_PER_CALL 32
 #define MAX_PAGES_PER_CALL 65536
-#define PAGE_MOVERS 8
-#define IBS_SAMPLE_WORKERS 1
+#define PAGE_MOVERS 2
+#define SAMPLER_WORKERS 1
 /*
  * Extra two threads for update_node_loadavg and
  * update_per_node_freemem functions.
  */
-#define THREAD_COUNT (PAGE_MOVERS + IBS_SAMPLE_WORKERS + 2)
+#define THREAD_COUNT (PAGE_MOVERS + SAMPLER_WORKERS + 2)
 
 struct page_list {
 	int pages;
@@ -132,14 +132,14 @@ struct page_list {
 	int           status[PAGES_PER_CALL];
 };
 
-struct ibs_sample_worker {
+struct sampler_worker {
 	int *map_fd;
 	int msecs;
 };
 
-static struct ibs_sample_worker ibs_worker;
-static atomic64_t ibs_pending_fetch_samples;
-static atomic64_t ibs_pending_op_samples;
+static struct sampler_worker worker;
+static atomic64_t pending_code_samples;
+static atomic64_t pending_data_samples;
 
 static void page_move_function(void *arg);
 static unsigned long upgrade_align   = 256 * PAGE_SIZE;
@@ -255,8 +255,7 @@ int freemem_threshold(void)
 
 static void ibs_fetchop_config_set(void)
 {
-	min_ibs_samples  = (l3miss) ? MIN_IBS_L3MISS_SAMPLES :
-			   MIN_IBS_CLASSIC_SAMPLES;
+	min_samples  = (l3miss) ? MIN_L3MISS_SAMPLES : MIN_CLASSIC_SAMPLES;
 }
 
 static void page_mover_enqueue(struct page_list *page)
@@ -326,7 +325,7 @@ static void page_move_function(void *arg)
 
 	for (i = 0; i < page->pages; i++) {
 		if (page->status[i] == 0)
-			atomic64_inc(&pages_migrated);
+			atomic64_inc(&status_pages_migrated);
 	}
 
 #ifdef DEBUG_ON
@@ -347,8 +346,7 @@ static void page_move_function(void *arg)
 	free(page);
 }
 
-static unsigned long peek_ibs_samples(int fd, unsigned long old,
-				      unsigned long *new)
+static unsigned long peek_samples(int fd, unsigned long old, unsigned long *new)
 {
 	unsigned long messages, new_value;
 	int key = 0;
@@ -564,8 +562,8 @@ static void process_data_samples(struct bst_node **rootpp,
 
 static void print_memory_access_summary_histogram(unsigned long code,
 						  unsigned long data,
-						  unsigned long *fetchsamples,
-						  unsigned long *opsamples,
+						  unsigned long *codesamples,
+						  unsigned long *datasamples,
 						  int nodes)
 {
 	int i;
@@ -588,20 +586,20 @@ static void print_memory_access_summary_histogram(unsigned long code,
 	printf("%s", NORM);
 
 	for (i = 0; i < nodes; i++) {
-		if (fetchsamples[i] <= 0 || !code)
+		if (codesamples[i] <= 0 || !code)
 			pct = 0.0;
 		else
-			pct = (((double)fetchsamples[i]) * 100) / code;
+			pct = (((double)codesamples[i]) * 100) / code;
 
 		print_bar(i, true, false, false, pct);
 	}
 	printf("\n");
 
 	for (i = 0; i < nodes; i++) {
-		if (opsamples[i] <= 0 || !data)
+		if (datasamples[i] <= 0 || !data)
 			pct = 0.0;
 		else
-			pct = (((double)opsamples[i]) * 100) / data;
+			pct = (((double)datasamples[i]) * 100) / data;
 
 		print_bar(i, false, false, false, pct);
 	}
@@ -609,8 +607,8 @@ static void print_memory_access_summary_histogram(unsigned long code,
 
 static void print_memory_access_summary_in_text(unsigned long code,
 						unsigned long data,
-						unsigned long *fetchsamples,
-						unsigned long *opsamples,
+						unsigned long *codesamples,
+						unsigned long *datasamples,
 						int nodes)
 {
 	int i;
@@ -638,10 +636,10 @@ static void print_memory_access_summary_in_text(unsigned long code,
 	}
 
 	for (i = 0; i < nodes; i++) {
-		if (fetchsamples[i] <= 0 || !code)
+		if (codesamples[i] <= 0 || !code)
 			pct = 0.0;
 		else
-			pct = (((double)fetchsamples[i]) * 100) / code;
+			pct = (((double)codesamples[i]) * 100) / code;
 		if (pct >= 75.0)
 			printf("%s", BRED);
 		else if (pct >= 50.0)
@@ -658,10 +656,10 @@ static void print_memory_access_summary_in_text(unsigned long code,
 	}
 
 	for (i = 0; i < nodes; i++) {
-		if (opsamples[i] <= 0 || !data)
+		if (datasamples[i] <= 0 || !data)
 			pct = 0.0;
 		else
-			pct = (((double)opsamples[i]) * 100) / data;
+			pct = (((double)datasamples[i]) * 100) / data;
 		if (pct >= 75.0)
 			printf("%s", BRED);
 		else if (pct >= 50.0)
@@ -680,13 +678,13 @@ static void print_memory_access_summary_in_text(unsigned long code,
 	printf("\n");
 }
 
-static void get_sample_statistics(bool fetch, unsigned long **samples,
+static void get_sample_statistics(bool code, unsigned long **samples,
 				  int *count)
 {
 	if (is_tier_mode() && !is_default_tier_mode())
-		get_sample_statistics_tier(fetch, samples, count);
+		get_sample_statistics_tier(code, samples, count);
 	else
-		get_sample_statistics_numa(fetch, samples, count);
+		get_sample_statistics_numa(code, samples, count);
 }
 
 static void print_memory_access_summary(void)
@@ -696,8 +694,8 @@ static void print_memory_access_summary(void)
 	static struct timeval start;
 	struct timeval end;
 	static int print_summary;
-	unsigned long *fetchsamples;
-	unsigned long *opsamples;
+	unsigned long *codesamples;
+	unsigned long *datasamples;
 
 	if (atomic_cmxchg(&print_summary, 0, 1))
 		return;
@@ -713,15 +711,15 @@ static void print_memory_access_summary(void)
 
 	start = end;
 
-	get_sample_statistics(true, &fetchsamples, &nodes);
-	get_sample_statistics(false, &opsamples, &nodes);
+	code = 0;
+	get_sample_statistics(true, &codesamples, &nodes);
+	for (i = 0; i < nodes; i++)
+		code += codesamples[i];
 
 	data = 0;
-	code = 0;
-	for (i = 0; i < nodes; i++) {
-		data += opsamples[i];
-		code += fetchsamples[i];
-	}
+	get_sample_statistics(false, &datasamples, &nodes);
+	for (i = 0; i < nodes; i++)
+		data += datasamples[i];
 
 	if (!code && !data) {
 		assert(atomic_cmxchg(&print_summary, 1, 0) == 1);
@@ -730,10 +728,10 @@ static void print_memory_access_summary(void)
 
 	if (!histogram_format) {
 		print_memory_access_summary_in_text(code, data,
-				fetchsamples, opsamples, nodes);
+				codesamples, datasamples, nodes);
 	} else {
 		print_memory_access_summary_histogram(code, data,
-				fetchsamples, opsamples, nodes);
+				codesamples, datasamples, nodes);
 	}
 
 	assert(atomic_cmxchg(&print_summary, 1, 0) == 1);
@@ -787,36 +785,36 @@ static int terminate_additional_bpf_programs(void)
         return 0;
 }
 
-void update_sample_statistics(unsigned long *samples, bool fetch)
+void update_sample_statistics(unsigned long *samples, bool code)
 {
 	if (trace_dir)
-		update_sample_statistics_tracer(samples, fetch);
+		update_sample_statistics_tracer(samples, code);
 	else if (is_tier_mode() && !is_default_tier_mode())
-		update_sample_statistics_tier(samples, fetch);
+		update_sample_statistics_tier(samples, code);
 	else
-		update_sample_statistics_numa(samples, fetch);
+		update_sample_statistics_numa(samples, code);
 }
 
-static void process_samples(int *map_fd, int msecs, bool fetch)
+static void process_samples_int(int *map_fd, int msecs, bool code)
 {
 	struct bst_node *root = NULL;
-	__u64 total_freq_fetch, total_freq_op;
-	unsigned long fetch_cnt;
-	unsigned long op_cnt;
+	__u64 total_freq_code, total_freq_data;
+	unsigned long codecnt_local;
+	unsigned long datacnt_local;
 
-	if (fetch) {
-		fetch_cnt = atomic64_read(&ibs_pending_fetch_samples);
-		op_cnt    = 0;
-		atomic64_sub(&ibs_pending_fetch_samples, fetch_cnt);
+	if (code) {
+		codecnt_local = atomic64_read(&pending_code_samples);
+		datacnt_local = 0;
+		atomic64_sub(&pending_code_samples, codecnt_local);
 	} else {
-		op_cnt    = atomic64_read(&ibs_pending_op_samples);
-		fetch_cnt = 0;
-		atomic64_sub(&ibs_pending_op_samples, op_cnt);
+		datacnt_local = atomic64_read(&pending_data_samples);
+		codecnt_local = 0;
+		atomic64_sub(&pending_data_samples, datacnt_local);
 	}
 
 	if (tuning_mode == PROCESS_MOVE) {
-		if ((fetch_cnt >= MIN_IBS_FETCH_SAMPLES) ||
-			(op_cnt >= MIN_IBS_OP_SAMPLES))
+		if ((codecnt_local >= MIN_CODE_SAMPLES) ||
+			(datacnt_local >= MIN_DATA_SAMPLES))
 			process_migrate_processes(map_fd[PROC_STAT_MAP]);
 		return;
 	}
@@ -825,7 +823,8 @@ static void process_samples(int *map_fd, int msecs, bool fetch)
 		/* Capture and update the process run data
 		 * till the sampling_interval_cnt.
 		 */
-		if (sampling_interval_cnt && sampling_iter < sampling_interval_cnt) {
+		if (sampling_interval_cnt &&
+		    sampling_iter < sampling_interval_cnt) {
 			printf("Capturing process run data :"
 				"sampling_iter=%u/%u\n", sampling_iter,
 				sampling_interval_cnt);
@@ -834,7 +833,8 @@ static void process_samples(int *map_fd, int msecs, bool fetch)
         } else {
 			printf("Done capturing data."
 				"Analyzing and setting process tuning.\n");
-			analyze_and_set_autotune_params(&curr_proc_data_map_idx);
+			analyze_and_set_autotune_params(
+					&curr_proc_data_map_idx);
 			proc_data_sampling_done = true;
 		}
 
@@ -854,30 +854,28 @@ static void process_samples(int *map_fd, int msecs, bool fetch)
 		tuning_mode |= MEMORY_MOVE;
 	}
 
-	total_freq_fetch = 0;
-	total_freq_op = 0;
+	total_freq_code = 0;
+	total_freq_data = 0;
 
-	if (fetch_cnt >= MIN_IBS_FETCH_SAMPLES) {
-		fetch_cnt = get_code_samples(map_fd[IBS_FETCH_MAP],
-					     &total_freq_fetch,
-					     true);
-		if (fetch_cnt) {
-			update_sample_statistics(fetch_samples_max, true);
-			process_code_samples(&root, total_freq_fetch);
+	if (codecnt_local >= MIN_CODE_SAMPLES) {
+		codecnt_local = get_code_samples(map_fd[CODE_MAP],
+						&total_freq_code, true);
+		if (codecnt_local) {
+			update_sample_statistics(code_samples_max, true);
+			process_code_samples(&root, total_freq_code);
 		}
 	}
 
-	if (op_cnt >= MIN_IBS_OP_SAMPLES) {
-		op_cnt = get_data_samples(map_fd[IBS_OP_MAP],
-					  &total_freq_op,
-					  true);
-		if (op_cnt) {
-			update_sample_statistics(op_samples_max, false);
-			process_data_samples(&root, total_freq_op);
+	if (datacnt_local >= MIN_DATA_SAMPLES) {
+		datacnt_local = get_data_samples(map_fd[DATA_MAP],
+						&total_freq_data, true);
+		if (datacnt_local) {
+			update_sample_statistics(data_samples_max, false);
+			process_data_samples(&root, total_freq_data);
 		}
 	}
 
-	if (!fetch_cnt && !op_cnt)
+	if (!codecnt_local && !datacnt_local)
 		return;
 
 	if (trace_dir)
@@ -888,70 +886,66 @@ static void process_samples(int *map_fd, int msecs, bool fetch)
 	bst_process_pages(root);
 }
 
-static bool ibs_pending_samples(void)
+static bool pending_samples(void)
 {
-	unsigned long fetch_samples, op_samples;
-	
-	fetch_samples = atomic64_read(&ibs_pending_fetch_samples);
-	op_samples = atomic64_read(&ibs_pending_op_samples);
+	unsigned long codesamples, datasamples;
 
-	if (fetch_samples >= MIN_IBS_SAMPLES &&
-	    op_samples >= MIN_IBS_OP_SAMPLES)
+	codesamples = atomic64_read(&pending_code_samples);
+	datasamples = atomic64_read(&pending_data_samples);
+
+	if (codesamples >= MIN_SAMPLES && datasamples >= MIN_DATA_SAMPLES)
 		return true;
 
-	if (op_samples >= MIN_IBS_SAMPLES &&
-	    fetch_samples >= MIN_IBS_FETCH_SAMPLES)
+	if (datasamples >= MIN_SAMPLES && codesamples >= MIN_CODE_SAMPLES)
 		return true;
 
-	if ((fetch_samples >= 2 * MIN_IBS_SAMPLES) ||
-	    (op_samples >= 2 * MIN_IBS_SAMPLES))
+	if ((codesamples >= 2 * MIN_SAMPLES) ||
+	    (datasamples >= 2 * MIN_SAMPLES))
 		return true;
-
 
 	return false;
 }
 
-static void ibs_sample_worker_function(void *arg)
+static void sampler_worker_function(void *arg)
 {
 	static int light_semaphore;
-	struct ibs_sample_worker *worker = arg;
+	struct sampler_worker *worker = arg;
 
 	/*
 	 * No multiple instances of sample processing for now.
-	 * However we could process fetch and op samples in
+	 * However we could process code and oata samples in
 	 * parallel without integrity issues.
 	 */
 	if (atomic_cmxchg(&light_semaphore, 0, 1))
 		return;
 
-	if (ibs_pending_samples()) {
-		process_samples(worker->map_fd, worker->msecs, false);
-		process_samples(worker->map_fd, worker->msecs, true);
+	if (pending_samples()) {
+		process_samples_int(worker->map_fd, worker->msecs, false);
+		process_samples_int(worker->map_fd, worker->msecs, true);
 	}
 
 	assert(atomic_cmxchg(&light_semaphore, 1, 0) == 1);
 }
 
-static void init_ibs_sample_worker(int *map_fd,
+static void init_sampler_worker(int *map_fd,
 				   int msecs)
 {
-	ibs_worker.map_fd = map_fd;
-	ibs_worker.msecs  = msecs;
+	worker.map_fd = map_fd;
+	worker.msecs  = msecs;
 }
 
-static void ibs_process_samples(unsigned long fetch_cnt,
-				unsigned long op_cnt)
+static void process_samples(unsigned long codecnt, unsigned long datacnt)
 {
 	int err;
 
-	atomic64_add(&ibs_pending_fetch_samples, fetch_cnt);
-	atomic64_add(&ibs_pending_op_samples, op_cnt);
+	atomic64_add(&pending_code_samples, codecnt);
+	atomic64_add(&pending_data_samples, datacnt);
 
-	if (!ibs_pending_samples())
+	if (!pending_samples())
 		return;
 
-	err = threadpool_add_work(&threadpool,
-			ibs_sample_worker_function, &ibs_worker);
+	err = threadpool_add_work(&threadpool, sampler_worker_function,
+				  &worker);
 	if (err)
 		printf("Failed to add work to threadpool, error %d\n", err);
 
@@ -964,9 +958,9 @@ static void print_migration_status(void)
 	printf("MODE : %-13s Fetch_Samples :%-10ld "
 		"OP_Samples :%-10ld Migrated_Pages :%-10ld\n",
 		(l3miss) ? "IBS_L3MISS":"IBS_CLASSIC",
-		atomic64_read(&fetch_cnt),
-		atomic64_read(&op_cnt),
-		atomic64_read(&pages_migrated));
+		atomic64_read(&status_code_cnt),
+		atomic64_read(&status_data_cnt),
+		atomic64_read(&status_pages_migrated));
 }
 
 static void interrupt_signal(int sig)
@@ -982,7 +976,7 @@ static void interrupt_signal(int sig)
  */
 static int pages_migration_status(int msecs,
 				  struct timeval*start,
-				  unsigned long *ibs_samples_old,
+				  unsigned long *samples_old,
 				  unsigned long *pages_migrated_old)
 {
 	int max_secs;
@@ -998,15 +992,16 @@ static int pages_migration_status(int msecs,
 	gettimeofday(&end, NULL);
 	max_secs = migration_timeout_sec;
 	if (seconds_elapsed(start, &end) >= max_secs) {
-		if ((atomic64_read(&op_cnt) + atomic64_read(&fetch_cnt)) <=
-			((*ibs_samples_old + MIN_IBS_SAMPLES))) {
+		if ((atomic64_read(&status_data_cnt) +
+		    atomic64_read(&status_code_cnt)) <=
+			((*samples_old + MIN_SAMPLES))) {
 			return ETIMEDOUT;
 		}
 
-		*ibs_samples_old = atomic64_read(&op_cnt) +
-				   atomic64_read(&fetch_cnt);
+		*samples_old = atomic64_read(&status_data_cnt) +
+				   atomic64_read(&status_code_cnt);
 
-		if (atomic64_read(&pages_migrated) <
+		if (atomic64_read(&status_pages_migrated) <
 			MIN_MIGRATED_PAGES + *pages_migrated_old) {
 			return ETIMEDOUT;
 		}
@@ -1019,16 +1014,16 @@ static int pages_migration_status(int msecs,
 
 		gettimeofday(start, NULL);
 
-		*pages_migrated_old = atomic64_read(&pages_migrated);
+		*pages_migrated_old = atomic64_read(&status_pages_migrated);
 	}
 
 	return 0;
 }
 
-static void balancer_cleanup(int fetch_fd, int op_fd)
+static void balancer_cleanup(int code_fd, int data_fd)
 {
-	cleanup_code_samples(fetch_fd);
-	cleanup_data_samples(op_fd);
+	cleanup_code_samples(code_fd);
+	cleanup_data_samples(data_fd);
 }
 
 static void set_knob(int fd, int knob, int value)
@@ -1174,30 +1169,30 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 	int err = -1;
 	struct bpf_object *obj = NULL;
 	struct bpf_program *prog[TOTAL_BPF_PROGRAMS];
-	struct bpf_link **fetch_links = NULL, **op_links = NULL;
+	struct bpf_link **code_links = NULL, **data_links = NULL;
 	char filename[256];
 	int map_fd[TOTAL_MAPS];
-	unsigned long fetch_cnt, op_cnt;
-	unsigned long fetch_cnt_old, op_cnt_old;
-	unsigned long fetch_cnt_new, op_cnt_new;
-	unsigned long ibs_samples_old = 0, pages_migrated_old = 0;
+	unsigned long code_cnt, data_cnt;
+	unsigned long code_cnt_old, data_cntold;
+	unsigned long code_cnt_new, data_cntnew;
+	unsigned long samples_old = 0, pages_migrated_old = 0;
 	enum tuning_mode tuning_mode_old = tuning_mode;
 	struct timeval start;
 
-	fetch_links = calloc(nr_cpus, sizeof(struct bpf_link *));
-	if (!fetch_links) {
+	code_links = calloc(nr_cpus, sizeof(struct bpf_link *));
+	if (!code_links) {
 		fprintf(stderr, "ERROR: malloc of links\n");
 		goto cleanup;
 	}
 
-	op_links = calloc(nr_cpus, sizeof(struct bpf_link *));
-	if (!op_links) {
+	data_links = calloc(nr_cpus, sizeof(struct bpf_link *));
+	if (!data_links) {
 		fprintf(stderr, "ERROR: malloc of links\n");
 		goto cleanup;
 	}
 
-	snprintf(filename, sizeof(filename), "%s/%s_kernel.o",
-		 ebpf_object_dir, kernobj);
+	snprintf(filename, sizeof(filename), "%s/memory_profiler_kern.o",
+		 ebpf_object_dir);
 	obj = bpf_object__open_file(filename, NULL);
 	if (libbpf_get_error(obj)) {
 		fprintf(stderr, "ERROR: opening BPF object file failed\n");
@@ -1306,17 +1301,17 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 	if (err)
 		goto cleanup;
 
-	init_ibs_sample_worker(map_fd, msecs);
+	init_sampler_worker(map_fd, msecs);
 
 	if (trace_dir) {
 		err = tracer_init(trace_dir);
 		assert(err == 0);
 	}
 
-	fetch_cnt_old = 0;
-	fetch_cnt_new = 0;
-	op_cnt_old = 0;
-	op_cnt_new = 0;
+	code_cnt_old = 0;
+	code_cnt_new = 0;
+	data_cntold = 0;
+	data_cntnew = 0;
 
 	signal(SIGINT, interrupt_signal);
 	gettimeofday(&start, NULL);
@@ -1353,8 +1348,8 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 			tuning_mode_old = tuning_mode;
         	}
 
-		if (ibs_op_sampling_begin(freq, prog[IBS_DATA_SAMPLER],
-					op_links, cpusetp) != 0) {
+		if (ibs_op_sampling_begin(freq, prog[DATA_SAMPLER],
+					data_links, cpusetp) != 0) {
 			if (l3miss)
 				fprintf(stderr,
 					"IBS OP L3 miss fitlering "
@@ -1365,8 +1360,8 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 			goto cleanup;
 		}
 
-		err = ibs_fetch_sampling_begin(freq, prog[IBS_CODE_SAMPLER],
-						fetch_links, cpusetp);
+		err = ibs_fetch_sampling_begin(freq, prog[CODE_SAMPLER],
+						code_links, cpusetp);
 		if (err) {
 			if (l3miss)
 				fprintf(stderr,
@@ -1381,35 +1376,34 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 		}
 
 		for (; ;)  {
-			fetch_cnt = peek_ibs_samples(map_fd[FETCH_COUNTER_MAP],
-						     fetch_cnt_old,
-						     &fetch_cnt_new);
+			code_cnt = peek_samples(map_fd[CODE_COUNTER_MAP],
+						code_cnt_old, &code_cnt_new);
 
-			op_cnt    = peek_ibs_samples(map_fd[OP_COUNTER_MAP],
-						     op_cnt_old, &op_cnt_new);
+			data_cnt    = peek_samples(map_fd[DATA_COUNTER_MAP],
+						 data_cntold, &data_cntnew);
 
-			if ((fetch_cnt >= MIN_IBS_SAMPLES)) {
-				fetch_cnt_old = fetch_cnt_new;
-				if (op_cnt >= MIN_IBS_OP_SAMPLES) {
-					op_cnt_old = op_cnt_new;
+			if ((code_cnt >= MIN_SAMPLES)) {
+				code_cnt_old = code_cnt_new;
+				if (data_cnt >= MIN_DATA_SAMPLES) {
+					data_cntold = data_cntnew;
 					break;
 				}
 				break;
 			}
 
-			if ((op_cnt >= MIN_IBS_SAMPLES)) {
-				op_cnt_old = op_cnt_new;
-				if (fetch_cnt >= MIN_IBS_FETCH_SAMPLES) {
-					fetch_cnt_old = fetch_cnt_new;
+			if ((data_cnt >= MIN_SAMPLES)) {
+				data_cntold = data_cntnew;
+				if (code_cnt >= MIN_CODE_SAMPLES) {
+					code_cnt_old = code_cnt_new;
 					break;
 				}
 				break;
 			}
 
-			if ((op_cnt >= 2 * MIN_IBS_SAMPLES) ||
-			    (fetch_cnt >= 2 * MIN_IBS_SAMPLES)) {
-				op_cnt_old    = op_cnt_new;
-				fetch_cnt_old = fetch_cnt_new;
+			if ((data_cnt >= 2 * MIN_SAMPLES) ||
+			    (code_cnt >= 2 * MIN_SAMPLES)) {
+				data_cntold    = data_cntnew;
+				code_cnt_old = code_cnt_new;
 				break;
 			}
 
@@ -1424,17 +1418,17 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 			 */
 			err = pages_migration_status(msecs,
 						     &start,
-						     &ibs_samples_old,
+						     &samples_old,
 						     &pages_migrated_old);
 			if (err)
 				break;
 		}
 
-		if (fetch_links)
-			ibs_sampling_end(fetch_links); /* IBS fetch */
+		if (code_links)
+			ibs_sampling_end(code_links);
 
-		if (op_links)
-			ibs_sampling_end(op_links);    /* IBS op */
+		if (data_links)
+			ibs_sampling_end(data_links);
 
 		if(err)
 			goto cleanup;
@@ -1450,23 +1444,23 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 		if (err)
 			goto cleanup;
 
-		ibs_process_samples(fetch_cnt, op_cnt);
+		process_samples(code_cnt, data_cnt);
 
 		usleep(msecs * 1000 / maximizer_mode);
 	}
 
 cleanup:
-	balancer_cleanup(map_fd[IBS_FETCH_MAP], map_fd[IBS_OP_MAP]);
+	balancer_cleanup(map_fd[CODE_MAP], map_fd[DATA_MAP]);
 	terminate_additional_bpf_programs();
 
-	if (fetch_links)
-		ibs_sampling_end(fetch_links); /* IBS fetch */
+	if (code_links)
+		ibs_sampling_end(code_links);
 
-	if (op_links)
-		ibs_sampling_end(op_links);    /* IBS op */
+	if (data_links)
+		ibs_sampling_end(data_links);
 
-	free(fetch_links);
-	free(op_links);
+	free(code_links);
+	free(data_links);
 	bpf_object__close(obj);
 	threadpool_destroy(&threadpool);
 

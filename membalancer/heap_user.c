@@ -57,7 +57,9 @@
 #include <ctype.h>
 #include <search.h>
 #include <sched.h>
-#include "membalancer_common.h"
+#include "memory_profiler_common.h"
+#include "memory_profiler_arch.h"
+#include "thread_pool.h"
 #include "membalancer_utils.h"
 #include "membalancer_numa.h"
 #include "heap_user.h"
@@ -81,14 +83,14 @@ int fill_process_stats_buffers(struct bpf_object *obj)
 	return 0;
 }
 
-static int fill_value_op_buffers(struct bpf_object *obj)
+static int fill_data_sample_buffers(struct bpf_object *obj)
 {
 	int fd, i;
-	struct value_op value[MAX_CPU_CORES];
+	struct data_sample value[MAX_CPU_CORES];
 
-	fd = bpf_object__find_map_fd_by_name(obj, "per_cpu_value_op");
+	fd = bpf_object__find_map_fd_by_name(obj, "per_cpu_data_sample");
 	if (fd < 0) {
-		fprintf(stderr, "BPF cannot find per_cpu_value_op map\n");
+		fprintf(stderr, "BPF cannot find per_cpu_code_sample map\n");
 		return -1;
 	}
 
@@ -97,17 +99,18 @@ static int fill_value_op_buffers(struct bpf_object *obj)
 		bpf_map_update_elem(fd, &i, &value[i], BPF_NOEXIST);
 	}
 
+	close(fd);
 	return 0;
 }
 
-static int fill_value_fetch_buffers(struct bpf_object *obj)
+static int fill_code_sample_buffers(struct bpf_object *obj)
 {
 	int fd, i;
-	struct value_fetch value[MAX_CPU_CORES];
+	struct code_sample value[MAX_CPU_CORES];
 
-	fd = bpf_object__find_map_fd_by_name(obj, "per_cpu_value_fetch");
+	fd = bpf_object__find_map_fd_by_name(obj, "per_cpu_code_sample");
 	if (fd < 0) {
-		fprintf(stderr, "BPF cannot find per_cpu_value_fetch map\n");
+		fprintf(stderr, "BPF cannot find per_cpu_code_sample map\n");
 		return -1;
 	}
 
@@ -116,6 +119,7 @@ static int fill_value_fetch_buffers(struct bpf_object *obj)
 		bpf_map_update_elem(fd, &i, &value[i], BPF_NOEXIST);
 	}
 
+	close(fd);
 	return 0;
 }
 
@@ -127,10 +131,9 @@ int init_heap(struct bpf_object *obj)
 	if (err)
 		return err;
 
-	err = fill_value_op_buffers(obj);
+	err = fill_data_sample_buffers(obj);
 	if (err)
 		return err;
 
-	return fill_value_fetch_buffers(obj);
-
+	return fill_code_sample_buffers(obj);
 }

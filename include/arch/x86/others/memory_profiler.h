@@ -14,40 +14,10 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
- * Process samples from IBS or software sampler and analyze the instruction and
- * data (if available) samples.
+ * Header file for architectural specific handlers for memory sampling.
  */
 
-#ifndef _LBR_COMMON_H_
-#define _LBR_COMMON_H_
-#define MAX_LBR_SAMPLES (64 * 1024)
-struct lbr_pbe_key {
-	u64 tgid;
-	u64 from;
-	u64 to;
-};
-
-struct lbr_pbe_val {
-	volatile u32 ref;
-	u32 unique;
-};
-
-struct lbr_pbe_flags_key {
-	u64 flags;
-	u32 unique;
-	u32 filler;
-};
-
-struct lbr_pbe_flags {
-	volatile u32 ref;
-};
-
-struct bpf_perf_event_data;
-struct perf_branch_entry;
-int lbr_sample(struct bpf_perf_event_data *ctx,
-	       struct perf_branch_entry **firstentryout, int *entries);
-
-struct perf_branch_entry;
-int lbr_entry(struct perf_branch_entry *src,
-	      struct perf_branch_entry *dst);
+#ifndef _MEMORY_PROFILER_OTHERS_
+#define _MEMORY_PROFILER_OTHERS_
+#define MAX_LBR_ENTRIES 32
 #endif

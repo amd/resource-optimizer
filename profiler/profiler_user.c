@@ -58,7 +58,9 @@
 #include <search.h>
 #include <sched.h>
 
-#include "membalancer_common.h"
+#include "memory_profiler_common.h"
+#include "memory_profiler_arch.h"
+#include "thread_pool.h"
 #include "membalancer_utils.h"
 #include "membalancer_numa.h"
 #include "membalancer_migrate.h"
@@ -72,16 +74,16 @@
 #define MIN_MIGRATED_PAGES 	1024
 #define MIN_MIGRATED_PAGES_TIER 4096
 
-#undef MIN_IBS_CLASSIC_SAMPLES
-#undef MIN_IBS_L3MISS_SAMPLES
-#undef MIN_IBS_SAMPLES
-#undef MIN_IBS_FETCH_SAMPLES
-#undef MIN_IBS_OP_SAMPLES
-#define MIN_IBS_CLASSIC_SAMPLES 100
-#define MIN_IBS_L3MISS_SAMPLES  50
-#define MIN_IBS_SAMPLES min_ibs_samples
-#define MIN_IBS_FETCH_SAMPLES (MIN_IBS_SAMPLES / 2)
-#define MIN_IBS_OP_SAMPLES    (MIN_IBS_SAMPLES / 2)
+#undef MIN_CLASSIC_SAMPLES
+#undef MIN_L3MISS_SAMPLES
+#undef MIN_SAMPLES
+#undef MIN_CODE_SAMPLES
+#undef MIN_DATA_SAMPLES
+#define MIN_CLASSIC_SAMPLES 100
+#define MIN_L3MISS_SAMPLES  50
+#define MIN_SAMPLES min_ibs_samples
+#define MIN_CODE_SAMPLES (MIN_SAMPLES / 2)
+#define MIN_DATA_SAMPLES (MIN_SAMPLES / 2)
 
 int nr_cpus;
 static double min_pct = 0.01;
@@ -91,13 +93,13 @@ unsigned int cpu_nodes;
 float maximizer_mode = 0.2;
 bool tracer_physical_mode = true;
 int report_frequency = 1;
-unsigned int min_ibs_samples = MIN_IBS_CLASSIC_SAMPLES;
+unsigned int min_ibs_samples = MIN_CLASSIC_SAMPLES;
 int timer_clock = 1;
 
 static char cmd_args[]  = "c:f:P:p:r:M:o:v:t:D:L:B:I:L:uhcbVlS::";
 
-char * ebpf_object_dir = "../kernel/common/";
-atomic64_t fetch_cnt, op_cnt;
+char * ebpf_object_dir = "../bin/";
+atomic64_t status_code_cnt, status_data_cnt;
 
 #define IBS_FETCH_DEV "/sys/devices/ibs_fetch/type"
 #define IBS_OP_DEV    "/sys/devices/ibs_op/type"
@@ -147,15 +149,13 @@ int freemem_threshold(void)
 
 static void ibs_fetchop_config_set(void)
 {
-	min_ibs_samples  = (l3miss) ? MIN_IBS_L3MISS_SAMPLES :
-			   MIN_IBS_CLASSIC_SAMPLES;
+	min_ibs_samples  = (l3miss) ? MIN_L3MISS_SAMPLES : MIN_CLASSIC_SAMPLES;
 }
 
-unsigned long peek_ibs_samples(int fd, unsigned long old, unsigned long *new)
+unsigned long peek_samples(int fd, unsigned long old, unsigned long *new)
 {
 	unsigned long messages, new_value;
 	int key = 0;
-
 
 	new_value = old;
 	bpf_map_lookup_elem(fd, &key, &new_value);
@@ -172,7 +172,6 @@ unsigned long peek_ibs_samples(int fd, unsigned long old, unsigned long *new)
 
 	return messages;
 }
-
 
 int bst_add_page(pid_t pid, int to_node, unsigned long addr,
 		 bool upgrade, struct bst_node **root)
@@ -228,10 +227,10 @@ int terminate_additional_bpf_programs(void)
 	return 0;
 }
 
-void profiler_cleanup(int fetch_fd, int op_fd)
+void profiler_cleanup(int codefd, int datafd)
 {
-	cleanup_code_samples(fetch_fd);
-	cleanup_data_samples(op_fd);
+	cleanup_code_samples(codefd);
+	cleanup_data_samples(datafd);
 }
 
 void set_knob(int fd, int knob, int value)

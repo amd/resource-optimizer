@@ -3,12 +3,14 @@ LIBBPF = <..>/libbpf
 CLANG ?= clang
 LLC ?= llc
 ARCH := $(subst x86_64,x86,$(shell arch))
-MODULE   := membalancer
-BIN_KERN := ${MODULE}_kernel.o
+MODULE   := memory_profiler
+BIN_KERN := ${MODULE}_kern.o
+CPU_TYPE := -DCPU_AMD_X8664
 #DEFS = -DUSE_PAGEMAP
 #DEFS = -DCCMD_SOFTWARE_SAMPLING
 
 CLANG_FLAGS = -I. \
+	-I../../include/ \
 	-I../../include/common \
 	-I../../include/amd \
 	-include $(KDIR)/include/linux/kconfig.h \
@@ -25,7 +27,7 @@ CLANG_FLAGS = -I. \
 	-I$(KDIR)/tools/testing/selftests/bpf/ \
 	-I${LIBBPF}/src \
 	-D__KERNEL__ -D__BPF_TRACING__ -Wno-unused-value -Wno-pointer-sign \
-	-DCC_USING_FENTRY \
+	-DCC_USING_FENTRY ${CPU_TYPE} \
 	-D__TARGET_ARCH_$(ARCH) -Wno-compare-distinct-pointer-types \
 	-Wno-gnu-variable-sized-type-not-at-end \
 	-Wno-address-of-packed-member -Wno-tautological-compare \
@@ -33,8 +35,8 @@ CLANG_FLAGS = -I. \
 	-g -O2 -emit-llvm
 
 all:   $(BIN_KERN)
-%_kernel.o: %_kernel.c
+%_kern.o: %_kern.c
 	$(CLANG) $(CLANG_FLAGS) -c $< -o - -Wall| \
-		$(LLC) -march=bpf -mcpu=$(CPU) -filetype=obj -o $@
+		$(LLC) -march=bpf -mcpu=$(CPU) -filetype=obj -o ../../bin/$@
 clean:
-	rm -f *.o ${MODULE}.o ${MODULE}
+	rm -f *.o ../../bin/${MODULE}_kern.o

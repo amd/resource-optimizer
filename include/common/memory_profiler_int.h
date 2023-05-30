@@ -18,36 +18,12 @@
  * data (if available) samples.
  */
 
-#ifndef _LBR_COMMON_H_
-#define _LBR_COMMON_H_
-#define MAX_LBR_SAMPLES (64 * 1024)
-struct lbr_pbe_key {
-	u64 tgid;
-	u64 from;
-	u64 to;
-};
-
-struct lbr_pbe_val {
-	volatile u32 ref;
-	u32 unique;
-};
-
-struct lbr_pbe_flags_key {
-	u64 flags;
-	u32 unique;
-	u32 filler;
-};
-
-struct lbr_pbe_flags {
-	volatile u32 ref;
-};
-
-struct bpf_perf_event_data;
-struct perf_branch_entry;
-int lbr_sample(struct bpf_perf_event_data *ctx,
-	       struct perf_branch_entry **firstentryout, int *entries);
-
-struct perf_branch_entry;
-int lbr_entry(struct perf_branch_entry *src,
-	      struct perf_branch_entry *dst);
+#ifndef _MEMORY_PROFILER_INT_H_
+#define _MEMORY_PROFILER_INT_H_
+#ifdef __KERNEL__
+int code_sampler(struct bpf_perf_event_data *ctx, struct code_sample *sample);
+int data_sampler(struct bpf_perf_event_data *ctx, struct data_sample *sample);
+u32 code_latency(u64 register);
+u32 data_latency(u64 register);
+#endif
 #endif

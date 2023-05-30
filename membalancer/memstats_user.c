@@ -57,8 +57,9 @@
 #include <ctype.h>
 #include <search.h>
 #include <sched.h>
-
-#include "membalancer_common.h"
+#include "memory_profiler_common.h"
+#include "memory_profiler_arch.h"
+#include "thread_pool.h"
 #include "membalancer_utils.h"
 #include "membalancer_numa.h"
 #include "membalancer_migrate.h"
@@ -66,17 +67,17 @@
 #include "membalancer_utils.h"
 int iprofiler;
 
-struct ibs_fetch_sample fetch_samples[MAX_NUMA_NODES][MAX_IBS_SAMPLES];
-unsigned long fetch_samples_max[MAX_NUMA_NODES];
-unsigned long fetch_samples_cnt[MAX_NUMA_NODES];
+struct code_samples code_samples[MAX_NUMA_NODES][MAX_SAMPLES];
+unsigned long code_samples_max[MAX_NUMA_NODES];
+unsigned long code_samples_cnt[MAX_NUMA_NODES];
 
-struct ibs_op_sample op_samples[MAX_NUMA_NODES][MAX_IBS_SAMPLES];
-unsigned long op_samples_max[MAX_NUMA_NODES];
-unsigned long op_samples_cnt[MAX_NUMA_NODES];
+struct data_samples data_samples[MAX_NUMA_NODES][MAX_SAMPLES];
+unsigned long data_samples_max[MAX_NUMA_NODES];
+unsigned long data_samples_cnt[MAX_NUMA_NODES];
 
-static int fetch_cmp(const void *p1, const void *p2)
+static int code_samples_cmp(const void *p1, const void *p2)
 {
-	const struct ibs_fetch_sample *s1 = p1, *s2 = p2;
+	const struct code_samples *s1 = p1, *s2 = p2;
 
 	return s1->count - s2->count;
 }
@@ -86,14 +87,10 @@ static char * get_process(__u64 tgid)
 	return "";
 }
 
-extern struct ibs_fetch_sample fetch_samples[MAX_NUMA_NODES][MAX_IBS_SAMPLES];
-extern unsigned long fetch_samples_max[MAX_NUMA_NODES];
-extern atomic64_t fetch_cnt, op_cnt, pages_migrated;
-
 int get_code_samples(int fd, __u64 *total_freq, bool defer)
 {
 	__u64 key, next_key;
-	struct value_fetch value;
+	struct code_sample value;
 	int i, j, max, node;
 	long total = 0;
 	unsigned long paddr;
@@ -101,8 +98,8 @@ int get_code_samples(int fd, __u64 *total_freq, bool defer)
 	bool table_full = false;
 
 	for (i = 0; i < max_nodes; i++) {
-		fetch_samples_max[i] = 0;
-		fetch_samples_cnt[i] = 0;
+		code_samples_max[i] = 0;
+		code_samples_cnt[i] = 0;
 	}
 
 	/* Process fetch samples from the map*/
@@ -111,10 +108,9 @@ int get_code_samples(int fd, __u64 *total_freq, bool defer)
 	while (bpf_map_get_next_key(fd, &key, &next_key) == 0) {
 		bpf_map_lookup_elem(fd, &next_key, &value);
 
-		atomic64_inc(&fetch_cnt);
+		atomic64_inc(&status_code_cnt);
 #ifdef USE_PAGEMAP
-		paddr = get_physaddr((pid_t)value.tgid,	
-				value.fetch_regs[IBS_FETCH_LINADDR]);
+		paddr = get_physaddr((pid_t)value.tgid,	value.vaddr);
 		if (paddr == (unsigned long)-1) {
 			key = next_key;
 			bpf_map_delete_elem(fd, &next_key);
@@ -123,11 +119,10 @@ int get_code_samples(int fd, __u64 *total_freq, bool defer)
 
 		paddr *= PAGE_SIZE;
 		/*
-		assert(paddr == (value.fetch_regs[IBS_FETCH_PHYSADDR] &
-				 ~(MEMB_PAGE_SIZE - 1)));
+		assert(paddr == (value.vaddr & ~(MEMB_PAGE_SIZE - 1)));
 		*/
 #else
-		paddr = value.fetch_regs[IBS_FETCH_PHYSADDR];
+		paddr = value.paddr;
 #endif
 
 		node = get_current_node(paddr);
@@ -138,7 +133,7 @@ int get_code_samples(int fd, __u64 *total_freq, bool defer)
 			continue;
 		}
 
-		if (i >= MAX_IBS_SAMPLES) {
+		if (i >= MAX_SAMPLES) {
 			bpf_map_delete_elem(fd, &next_key);
 			key = next_key;
 			table_full = true;
@@ -148,37 +143,36 @@ int get_code_samples(int fd, __u64 *total_freq, bool defer)
 		if (defer && value.count >= MIN_DENSE_SAMPLE_FREQ)
 			dense_samples++;
 
-		fetch_samples[node][i].ip    = value.ip;
-		fetch_samples[node][i].count = value.count;
-		fetch_samples[node][i].tgid  = value.tgid;
+		code_samples[node][i].count = value.count;
+		code_samples[node][i].ip    = value.ip;
+		code_samples[node][i].tgid  = value.tgid;
+		code_samples[node][i].vaddr = value.vaddr;
+		code_samples[node][i].paddr = value.paddr;
 
 		for (j = 0; j < max_nodes; j++)
-			fetch_samples[node][i].counts[j] = value.counts[j];
+			code_samples[node][i].counts[j] = value.counts[j];
 
 		if (iprofiler) {
-			for (j = 0; j < value.count; j++)
-				fetch_samples[node][i].latency[j] =
+			for (j = 0; j < value.count; j++) {
+				if (j > MAX_LATENCY_IDX)
+					break;
+
+				code_samples[node][i].latency[j] =
 							value.latency[j];
+			}
 		}
 
-		if (!IBS_KERN_SAMPLE(fetch_samples[node][i].ip))
-			snprintf(fetch_samples[node][i].process,
-				sizeof(fetch_samples[node][i].process),
+		if (!IBS_KERN_SAMPLE(code_samples[node][i].ip))
+			snprintf(code_samples[node][i].process,
+				sizeof(code_samples[node][i].process),
 					"%s",
 					get_process(value.tgid));
 
-		fetch_samples[node][i].fetch_regs[IBS_FETCH_CTL] =
-				value.fetch_regs[IBS_FETCH_CTL];
-		fetch_samples[node][i].fetch_regs[IBS_FETCH_LINADDR] =
-				value.fetch_regs[IBS_FETCH_LINADDR];
-		fetch_samples[node][i].fetch_regs[IBS_FETCH_PHYSADDR] =
-				value.fetch_regs[IBS_FETCH_PHYSADDR];
-
-		total += fetch_samples[node][i].count;
-		fetch_samples_max[node] += fetch_samples[node][i].count;
+		total += code_samples[node][i].count;
+		code_samples_max[node] += code_samples[node][i].count;
 		i++;
 
-		fetch_samples_cnt[node]++;
+		code_samples_cnt[node]++;
 		key = next_key;
 	}
 
@@ -197,13 +191,13 @@ int get_code_samples(int fd, __u64 *total_freq, bool defer)
 
 	/* sort samples */
        for (node = 0; node < max_nodes; node++)
-                qsort(fetch_samples[node], fetch_samples_cnt[node],
-                      sizeof(struct ibs_fetch_sample), fetch_cmp);
+                qsort(code_samples[node], code_samples_cnt[node],
+                      sizeof(struct code_samples), code_samples_cmp);
 
-	if (max >= MAX_IBS_SAMPLES) 
+	if (max >= MAX_SAMPLES) 
 		printf("Processed maximum samples. "
 		       "Likely to have dropped some. Increase the value of "
-		       "MAX_IBS_SAMPLES\n");
+		       "MAX_SAMPLES\n");
 
 	*total_freq = total;
 
@@ -213,12 +207,12 @@ int get_code_samples(int fd, __u64 *total_freq, bool defer)
 void cleanup_code_samples(int fd)
 {
 	__u64 key, next_key;
-	struct value_fetch value;
+	struct code_sample value;
 	int i, j;
 
 	for (i = 0; i < max_nodes; i++) {
-		fetch_samples_max[i] = 0;
-		fetch_samples_cnt[i] = 0;
+		code_samples_max[i] = 0;
+		code_samples_cnt[i] = 0;
 	}
 
 	/* Process fetch samples from the map*/
@@ -231,14 +225,14 @@ void cleanup_code_samples(int fd)
 		key = next_key;
 
 		for (j = 0; j < max_nodes; j++)
-			fetch_samples[j][i].count = 0;
+			code_samples[j][i].count = 0;
 
 	}
 }
 
-static int op_cmp(const void *p1, const void *p2)
+static int data_samples_cmp(const void *p1, const void *p2)
 {
-	const struct ibs_op_sample *s1 = p1, *s2 = p2;
+	const struct data_samples *s1 = p1, *s2 = p2;
 
 	return s1->count - s2->count;
 }
@@ -246,7 +240,7 @@ static int op_cmp(const void *p1, const void *p2)
 int get_data_samples(int fd, __u64 *total_freq, bool defer)
 {
 	__u64 key, next_key;
-	struct value_op value;
+	struct data_sample value;
 	int i, j, max, node;
 	long total = 0;
 	unsigned long paddr;
@@ -254,7 +248,7 @@ int get_data_samples(int fd, __u64 *total_freq, bool defer)
 	bool table_full = false;
 
 	for (i = 0; i < max_nodes; i++)
-		op_samples_max[i] = 0;
+		data_samples_max[i] = 0;
 
 	/* Process op samples from the map*/
 	key = 0;
@@ -262,10 +256,9 @@ int get_data_samples(int fd, __u64 *total_freq, bool defer)
 	while (bpf_map_get_next_key(fd, &key, &next_key) == 0) {
 		bpf_map_lookup_elem(fd, &next_key, &value);
 
-		atomic64_inc(&op_cnt);
+		atomic64_inc(&status_data_cnt);
 #ifdef USE_PAGEMAP
-		paddr = get_physaddr((pid_t)value.tgid,	
-				value.op_regs[IBS_DC_LINADDR]);
+		paddr = get_physaddr((pid_t)value.tgid, value.vaddr);
 		if (paddr == (unsigned long)-1) {
 			key = next_key;
 			bpf_map_delete_elem(fd, &next_key);
@@ -275,11 +268,10 @@ int get_data_samples(int fd, __u64 *total_freq, bool defer)
 		paddr *= PAGE_SIZE;
 
 		/*
-		assert(paddr == (value.op_regs[IBS_DC_PHYSADDR] &
-				 ~(MEMB_PAGE_SIZE - 1)));
+		assert(paddr == (value.paddr & ~(MEMB_PAGE_SIZE - 1)))
 		*/
 #else
-		paddr = value.op_regs[IBS_DC_PHYSADDR];
+		paddr = value.paddr;
 #endif
 
 		node = get_current_node(paddr);
@@ -290,55 +282,46 @@ int get_data_samples(int fd, __u64 *total_freq, bool defer)
 			continue;
 		}
 
-		if (i >= MAX_IBS_SAMPLES) {
+		if (i >= MAX_SAMPLES) {
 			bpf_map_delete_elem(fd, &next_key);
 			key = next_key;
 			table_full = true;
 			continue;
 		}
 
-		op_samples[node][i].ip    = value.ip;
-		op_samples[node][i].count = value.count;
-		op_samples[node][i].tgid  = value.tgid;
+		data_samples[node][i].count = value.count;
+		data_samples[node][i].tgid  = value.tgid;
+		data_samples[node][i].ip    = value.ip;
+		data_samples[node][i].vaddr = value.vaddr;
+		data_samples[node][i].paddr = value.paddr;
 
 		for (j = 0; j < max_nodes; j++)
-			op_samples[node][i].counts[j] = value.counts[j];
+			data_samples[node][i].counts[j] = value.counts[j];
 
 		if (iprofiler) {
-			for (j = 0; j < value.count; j++)
-				op_samples[node][i].latency[j] =
+			for (j = 0; j < value.count; j++) {
+				if (j >= MAX_LATENCY_IDX)
+					break;
+
+				data_samples[node][i].latency[j] =
 							value.latency[j];
+			}
 		}
 
 		if (defer && value.count >= MIN_DENSE_SAMPLE_FREQ)
 			dense_samples++;
 
-		if (!IBS_KERN_SAMPLE(value.op_regs[IBS_OP_RIP]))
-			snprintf(op_samples[node][i].process,
-				sizeof(op_samples[node][i].process),
+		if (!IBS_KERN_SAMPLE(value.ip))
+			snprintf(data_samples[node][i].process,
+				sizeof(data_samples[node][i].process),
 				"%s",
-				get_process(op_samples[node][i].tgid));
+				get_process(data_samples[node][i].tgid));
 
-		op_samples[node][i].op_regs[IBS_OP_CTL] =
-				value.op_regs[IBS_OP_CTL];
-		op_samples[node][i].op_regs[IBS_OP_RIP] =
-				value.op_regs[IBS_OP_RIP];
-		op_samples[node][i].op_regs[IBS_OP_DATA] =
-				value.op_regs[IBS_OP_DATA];
-		op_samples[node][i].op_regs[IBS_OP_DATA2] =
-				value.op_regs[IBS_OP_DATA2];
-		op_samples[node][i].op_regs[IBS_OP_DATA3] =
-				value.op_regs[IBS_OP_DATA3];
-		op_samples[node][i].op_regs[IBS_DC_LINADDR] =
-				value.op_regs[IBS_DC_LINADDR];
-		op_samples[node][i].op_regs[IBS_DC_PHYSADDR] =
-				value.op_regs[IBS_DC_PHYSADDR];
-
-		total += op_samples[node][i].count;
-		op_samples_max[node] += op_samples[node][i].count;
+		total += data_samples[node][i].count;
+		data_samples_max[node] += data_samples[node][i].count;
 		i++;
 
-		op_samples_cnt[node]++;
+		data_samples_cnt[node]++;
 		key = next_key;
 	}
 
@@ -357,13 +340,13 @@ int get_data_samples(int fd, __u64 *total_freq, bool defer)
 
 	/* sort */
 	for (node = 0; node < max_nodes; node++)
-		qsort(op_samples[node], op_samples_cnt[node],
-		      sizeof(struct ibs_op_sample), op_cmp);
+		qsort(data_samples[node], data_samples_cnt[node],
+		      sizeof(struct data_samples), data_samples_cmp);
 
-	if (max >= MAX_IBS_SAMPLES) 
+	if (max >= MAX_SAMPLES) 
 		printf("Processed maximum samples. "
 		       "Likely to have dropped some. Increase the value of "
-		       "MAX_IBS_SAMPLES\n");
+		       "MAX_SAMPLES\n");
 
 	*total_freq = total;
 
@@ -373,7 +356,7 @@ int get_data_samples(int fd, __u64 *total_freq, bool defer)
 void cleanup_data_samples(int fd)
 {
 	__u64 key, next_key;
-	struct value_op value;
+	struct data_sample value;
 	int i, j;
 
 	/* Process op samples from the map*/
@@ -386,6 +369,6 @@ void cleanup_data_samples(int fd)
 
 
 		for (j = 0; j < max_nodes; j++)
-			op_samples[j][i].count = 0;
+			data_samples[j][i].count = 0;
 	}
 }

@@ -18,11 +18,25 @@
  * data (if available) samples.
  */
 
-#ifndef _MEMBALANCER_H_
-#define _MEMBALANCER_H_ 
-#include "generic_kern_amd.h"
+#ifndef _MEMORY_PROFILER_COMMON_H_
+#define _MEMORY_PROFILER_COMMON_H_
+#ifndef __KERNEL__
+#include<linux/types.h>
+typedef __u32 u32;
+typedef __u64 u64;
+#ifndef PAGE_SIZE
+#define PAGE_SIZE 4096
+#endif
+#ifndef PAGE_SHIFT
+#define PAGE_SHIFT 12
+#endif
+#endif
+#define MAX_NUMA_NODES 64
+#define KERN_PAGE_OFFSET 0xffff880000000000
+#define MAX_LATENCY_IDX 128
 
-#define MAX_IBS_SAMPLES	(64 * 1024)
+#define KERN_SAMPLE(ip) (ip > KERN_PAGE_OFFSET)
+#define MAX_SAMPLES	(64 * 1024)
 #define PROCESSNAMELEN 32
 #define MAX_CPU_CORES 1024
 #define MEMB_PAGE_SIZE (4096)
@@ -35,7 +49,7 @@
 #define MIN_DENSE_SAMPLES_DATA 16
 #define MIN_DENSE_SAMPLES_CODE 2
 
-enum balancer_knobs {
+enum memory_profiler_knobs {
 	CHECK_PPID,
 	MY_OWN_PID,
 	MY_PAGE_SIZE,
@@ -62,6 +76,32 @@ struct numa_range {
 	u32 node;
 	u32 tier;
 };
+
+struct code_sample {
+	u64 tgid;
+	u64 ip;
+	u64 vaddr;
+	u64 paddr;
+	u64 lat;
+	volatile u32 count;
+	u32 filler;
+	volatile u32 counts[MAX_NUMA_NODES];
+	volatile u32 latency[MAX_LATENCY_IDX];
+};
+
+struct data_sample {
+	u64 tgid;
+	u64 ip;
+	u64 vaddr;
+	u64 paddr;
+	u64 lat;
+	volatile u32 count;
+	u32 filler;
+	volatile u32 counts[MAX_NUMA_NODES];
+	volatile u32 latency[MAX_LATENCY_IDX];
+};
+
+#define INVALID_LATENCY (u32)-1
 
 #ifdef __KERNEL__
 /*
@@ -113,11 +153,11 @@ static inline bool just_once(volatile unsigned long *v)
 */
 #ifndef atomic_t
 typedef struct {
-        volatile int counter;
+	volatile int counter;
 } atomic_t;
 
 typedef struct {
-        volatile long counter;
+	volatile long counter;
 } atomic64_t;
 
 #define atomic64_read(v) __sync_fetch_and_add(&(v)->counter, 0)

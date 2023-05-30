@@ -23,10 +23,10 @@
 #include <bpf/bpf_helpers.h>
 #include <linux/perf_event.h>
 #include <bpf/bpf_helpers.h>
-#include <generic_kern_amd.h>
 #include <assert.h>
-#include "membalancer_common.h"
-#include "membalancer_pvt.h"
+#include "memory_profiler_arch.h"
+#include "memory_profiler_common.h"
+#include "memory_profiler_pvt.h"
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -38,20 +38,20 @@ struct {
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, int);
-	__type(value, struct value_fetch);
+	__type(value, struct code_sample);
 	__uint(max_entries, MAX_CPU_CORES);
-}  per_cpu_value_fetch SEC(".maps");
+}  per_cpu_code_sample SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, int);
-	__type(value, struct value_op);
+	__type(value, struct data_sample);
 	__uint(max_entries, MAX_CPU_CORES);
-}  per_cpu_value_op SEC(".maps");
+}  per_cpu_data_sample SEC(".maps");
 
 struct process_stats;
-struct value_fetch;
-struct value_op;
+struct code_sample;
+struct data_sample;
 
 struct process_stats * alloc_process_stats(void)
 {
@@ -61,18 +61,18 @@ struct process_stats * alloc_process_stats(void)
 	return bpf_map_lookup_elem(&per_cpu_process_stats, &key);
 }
 
-struct value_op * alloc_value_op(void)
+struct data_sample * alloc_data_sample(void)
 {
 	int key;
 
 	key = bpf_get_smp_processor_id();
-	return bpf_map_lookup_elem(&per_cpu_value_op, &key);
+	return bpf_map_lookup_elem(&per_cpu_data_sample, &key);
 }
 
-struct value_fetch * alloc_value_fetch(void)
+struct code_sample * alloc_code_sample(void)
 {
 	int key;
 
 	key = bpf_get_smp_processor_id();
-	return bpf_map_lookup_elem(&per_cpu_value_fetch, &key);
+	return bpf_map_lookup_elem(&per_cpu_code_sample, &key);
 }

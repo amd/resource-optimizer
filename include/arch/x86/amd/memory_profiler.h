@@ -18,8 +18,8 @@
  * data (if available) samples.
  */
 
-#ifndef _GENERIC_KERN_AMD
-#define _GENERIC_KERN_AMD
+#ifndef _MEMORY_PROFILER_AMD_
+#define _MEMORY_PROFILER_AMD_
 #include <linux/types.h>
 
 typedef __u32 u32;
@@ -70,8 +70,8 @@ enum {
 #define IBS_OP_LLC_MISS(reg) (reg & (1UL << 7))
 
 /*
- * The following 3 definitions are independent of AMD hardware. Unable to remove
- * them at this time because of they are used in generic_kern_amd.c.
+ * The following 4 definitions are independent of AMD hardware. Unable to remove
+ * them at this time because of they are used in AMD specific functions.
  *
  * TO DO : Refactor in future to avoid this strong coupling between machine
  * indepdendent and dependent codes.
@@ -81,27 +81,6 @@ enum {
 #define IBS_KERN_SAMPLE(ip) (ip > KERN_PAGE_OFFSET)
 #define MAX_LATENCY_IDX 128
 
-struct value_fetch {
-	u64 tgid;
-	u64 ip;
-	u64 fetch_regs[IBSFETCH_REG_COUNT];
-	volatile u32 counts[MAX_NUMA_NODES];
-	volatile u32 latency[MAX_LATENCY_IDX];
-	volatile u32 count;
-	int filler;
-};
-
-struct value_op {
-	u64 tgid;
-	u64 ip;
-	u64 op_regs[IBSOP_REG_COUNT];
-	volatile u32 counts[MAX_NUMA_NODES];
-	volatile u32 latency[MAX_LATENCY_IDX];
-	volatile u32 count;
-	u32 filler;
-};
-
 #define MAX_LBR_ENTRIES_ZEN4 16
 #define MAX_LBR_ENTRIES MAX_LBR_ENTRIES_ZEN4
-
 #endif

@@ -14,7 +14,8 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
- * IBS sampler : Arm IBS fetch and op sampling, collect both kernel and
+ * code and data sampleris : Collect code and data samples, process them and
+ * saved them into their respective maps
  * process samples.
  */
 #pragma once
@@ -26,24 +27,24 @@
 #include <bpf/bpf_helpers.h>
 #include <linux/perf_event.h>
 #include <bpf/bpf_helpers.h>
-#include <generic_kern_amd.h>
 #include <assert.h>
-#include "membalancer_common.h"
-#include "membalancer_pvt.h"
+#include "memory_profiler_arch.h"
+#include "memory_profiler_common.h"
+#include "memory_profiler_pvt.h"
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, u64);
-	__type(value, struct value_fetch);
-	__uint(max_entries, MAX_IBS_SAMPLES);
-} ibs_fetch_map SEC(".maps");
+	__type(value, struct code_sample);
+	__uint(max_entries, MAX_SAMPLES);
+} code_sample_map SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, u64);
-	__type(value, struct value_op);
-	__uint(max_entries, MAX_IBS_SAMPLES);
-} ibs_op_map SEC(".maps");
+	__type(value, struct data_sample);
+	__uint(max_entries, MAX_SAMPLES);
+} data_sample_map SEC(".maps");
 
 static void inc_resource_usage(const int node,
 			       volatile u32 counts[MAX_NUMA_NODES])
@@ -83,151 +84,126 @@ static void save_node_usage(volatile u32 counts[MAX_NUMA_NODES])
 	return;
 }
 
-static void save_fetch_latency(u64 reg, struct value_fetch *valuep)
+static void save_code_latency(u32 lat, struct code_sample *code)
 {
-	u32 latency, idx;
+	u32 idx;
 
-	if (!latency_stats && !latency_stats_l3miss)
+	if (lat == INVALID_LATENCY)
 		return;
 
-	if (latency_stats_l3miss && !IBS_FETCH_LLC_MISS(reg))
-		return;
-
-	idx = ATOMIC_READ(&valuep->count);
+	idx = ATOMIC_READ(&code->count);
 	if (idx >= MAX_LATENCY_IDX)
 		return;
 
-	latency = reg >> 32;
-	latency &= (latency << 16) >> 16;
-
-	ATOMIC_SET(&valuep->latency[idx], latency);
+	ATOMIC_SET(&code->latency[idx], lat);
 }
 
-static void save_op_latency(u64 reg, struct value_op *valuep)
+static void save_data_latency(u32 lat, struct data_sample *data)
 {
-	u32 latency, idx;
+	u32 idx;
 
-	if (!latency_stats && !latency_stats_l3miss)
+	if (lat == INVALID_LATENCY)
 		return;
 
-	if (latency_stats_l3miss && !IBS_OP_LLC_MISS(reg))
-		return;
-
-	idx = ATOMIC_READ(&valuep->count);
+	idx = ATOMIC_READ(&data->count);
 	if (idx >= MAX_LATENCY_IDX)
 		return;
 
-	latency = reg >> 32;
-	latency &= (latency << 16) >> 16;
-
-	ATOMIC_SET(&valuep->latency[idx], latency);
+	ATOMIC_SET(&data->latency[idx], lat);
 }
 
-static int process_fetch_samples(u64 tgid, struct value_fetch *fetch_data,
-				u64 ip, u32 page_size)
+static int process_code_samples(struct code_sample *code, u32 page_size)
 {
 	u64 key;
-	struct value_fetch *valuep;
+	struct code_sample *saved;
 
 #ifdef MEMB_USE_VA
-	key = fetch_data->fetch_regs[IBS_FETCH_LINADDR];
+	key = code->vaddr;
 #else
-	key = fetch_data->fetch_regs[IBS_FETCH_PHYSADDR];
+	key = code->paddr;
 #endif
 	if (page_size > 0)
 		key &= ~(page_size - 1);
 
-	valuep = bpf_map_lookup_elem(&ibs_fetch_map, &key);
-	if (valuep) {
+	saved = bpf_map_lookup_elem(&code_sample_map, &key);
+	if (saved) {
 
-		save_fetch_latency(fetch_data->fetch_regs[IBS_FETCH_CTL],
-				   valuep);
+		save_code_latency(code_latency(code->lat), code);
 
-		save_node_usage(valuep->counts);
- 		ATOMIC_INC(&valuep->count);
+		save_node_usage(saved->counts);
+ 		ATOMIC_INC(&saved->count);
 
 		/* Have dense samples before processing */
 		if (!defer_cnt)
-			inc_ibs_fetch_samples(1);
-		else if ((ATOMIC_READ(&valuep->count) % defer_cnt) == 0)
-			inc_ibs_fetch_samples(defer_cnt);
+			inc_code_samples(1);
+		else if ((ATOMIC_READ(&saved->count) % defer_cnt) == 0)
+			inc_code_samples(defer_cnt);
 
 		return 0;
 	}
 
 
-	fetch_data->tgid = tgid;
-	fetch_data->ip   = ip;
-	fetch_data->filler = 0;
-
-	save_node_usage(fetch_data->counts);
+	save_node_usage(code->counts);
 
 	/* If its is akernel sample or user sample with process id
 	* then record it.
 	*/
-	if ((IBS_KERN_SAMPLE(ip) || fetch_data->tgid)) {
-		save_fetch_latency(fetch_data->fetch_regs[IBS_FETCH_CTL],
-				    fetch_data);
-		ATOMIC_SET(&fetch_data->count, 1);
-		bpf_map_update_elem(&ibs_fetch_map, &key, fetch_data,
+	if ((KERN_SAMPLE(code->ip) || code->tgid)) {
+		save_code_latency(code_latency(code->lat), code);
+		ATOMIC_SET(&code->count, 1);
+		bpf_map_update_elem(&code_sample_map, &key, code,
 				   BPF_NOEXIST);
 
 		/* Have dense samples before processing */
 		if (!defer_cnt)
-			inc_ibs_fetch_samples(1);
+			inc_code_samples(1);
 	}
 
 	return 0;
 }
 
-static int process_op_samples(u64 tgid, struct value_op *op_data,
-			      u64 ip, u64 page_size)
+static int process_data_samples(struct data_sample *data, u64 page_size)
 {
 	u64 key;
-	struct value_op *valuep;
+	struct data_sample *saved;
 
 #ifdef MEMB_USE_VA
-	key = op_data->op_regs[IBS_DC_LINADDR];
+	key = data->vaddr;
 #else
-	key = op_data->op_regs[IBS_DC_PHYSADDR];
+	key = data->paddr;
 #endif
 	if (page_size > 0)
 		key &= ~(page_size - 1);
 
-	valuep = bpf_map_lookup_elem(&ibs_op_map, &key);
-	if (valuep) {
-		save_op_latency(op_data->op_regs[IBS_OP_DATA3], valuep);
-		save_node_usage(valuep->counts);
-		ATOMIC_INC(&valuep->count);
+	saved = bpf_map_lookup_elem(&data_sample_map, &key);
+	if (saved) {
+		save_data_latency(data_latency(data->lat), saved);
+		save_node_usage(saved->counts);
+		ATOMIC_INC(&saved->count);
 
 		/* Have dense samples before processing */
 		if (!defer_cnt)
-			inc_ibs_op_samples(1);
-		else if ((ATOMIC_READ(&valuep->count) % defer_cnt) == 0)
-			inc_ibs_op_samples(defer_cnt);
+			inc_data_samples(1);
+		else if ((ATOMIC_READ(&saved->count) % defer_cnt) == 0)
+			inc_data_samples(defer_cnt);
 
 		return 0;
 	}
 
 
-	op_data->tgid = tgid;
-	op_data->ip = ip;
-	op_data->filler = 0;
-
-	save_node_usage(op_data->counts);
+	save_node_usage(data->counts);
 
 	/* If its is akernel sample or user sample with process id
 	* then record it.
 	*/
-	if (op_data->op_regs[IBS_DC_PHYSADDR] != (u64)-1 &&
-            (IBS_KERN_SAMPLE(ip) || op_data->tgid)) {
-		save_op_latency(op_data->op_regs[IBS_OP_DATA3], op_data);
-		ATOMIC_SET(&op_data->count, 1);
-		bpf_map_update_elem(&ibs_op_map, &key, op_data, BPF_NOEXIST);
+	if (data->paddr != (u64)-1 && (KERN_SAMPLE(data->ip) || data->tgid)) {
+		save_data_latency(data_latency(data->lat), data);
+		ATOMIC_SET(&data->count, 1);
+		bpf_map_update_elem(&data_sample_map, &key, data, BPF_NOEXIST);
 
 		/* Have dense samples before processing */
 		if (!defer_cnt)
-			inc_ibs_op_samples(1);
+			inc_data_samples(1);
 	}
 
 	return 0;
@@ -236,41 +212,53 @@ static int process_op_samples(u64 tgid, struct value_op *op_data,
 SEC("perf_event")
 int memstats_data_sampler(struct bpf_perf_event_data *ctx)
 {
-	struct value_op *op_data;
+	struct data_sample *data;
+	u64 tgid;
 	int err;
-	u64 ip, tgid;
 
 	init_function();
 
-	op_data = alloc_value_op();
-	if (!op_data)
+	tgid = bpf_get_current_pid_tgid();
+	if (!valid_pid(tgid >> 32))
+		return -EINVAL;
+
+	data = alloc_data_sample();
+	if (!data)
 		return -ENOMEM;
 
-	memset(op_data, 0, sizeof(*op_data));
-	err = ibs_op_event(ctx, op_data, &tgid, &ip);
+	memset(data, 0, sizeof(*data));
+	data->tgid = tgid;
+
+	err = data_sampler(ctx, data);
 	if (err)
 		return err;
 
-	return process_op_samples(tgid, op_data, ip, my_page_size);
+	return process_data_samples(data, my_page_size);
 }
 
 SEC("perf_event")
 int memstats_code_sampler(struct bpf_perf_event_data *ctx)
 {
-	struct value_fetch *fetch_data;
+	struct code_sample *sample;
+	u64 tgid;
 	int err;
-	u64 ip, tgid;
 
 	init_function();
 
-	fetch_data = alloc_value_fetch();
-	if (!fetch_data)
+	tgid = bpf_get_current_pid_tgid();
+	if (!valid_pid(tgid >> 32))
+		return -EINVAL;
+
+	sample = alloc_code_sample();
+	if (!sample)
 		return -ENOMEM;
 
-	memset(fetch_data, 0, sizeof(*fetch_data));
-	err = ibs_fetch_event(ctx, fetch_data, &tgid, &ip);
+	memset(sample, 0, sizeof(*sample));
+	sample->tgid = tgid;
+
+	err = code_sampler(ctx, sample);
 	if (err)
 		return err;
 
-	return process_fetch_samples(tgid, fetch_data, ip, my_page_size);
+	return process_code_samples(sample, my_page_size);
 }

@@ -39,8 +39,9 @@
 #include <numa.h>
 #include <numaif.h>
 #include <stdbool.h>
-
-#include "membalancer_common.h"
+#include "memory_profiler_common.h"
+#include "memory_profiler_arch.h"
+#include "thread_pool.h"
 #include "membalancer_utils.h"
 #include "membalancer_numa.h"
 
@@ -64,8 +65,8 @@ struct generic_tier generic_tier[MAX_NUMA_NODES][MAX_NUMA_NODES];
 static bool tier_mode = false;
 static bool default_tier = false;
 
-static unsigned long fetch_overall_samples[MAX_NUMA_NODES];
-static unsigned long op_overall_samples[MAX_NUMA_NODES];
+static unsigned long code_overall_samples[MAX_NUMA_NODES];
+static unsigned long data_overall_samples[MAX_NUMA_NODES];
 
 
 bool is_tier_mode(void)
@@ -631,149 +632,147 @@ int init_tier(char *args)
 	return 0;
 }
 
-void update_sample_statistics_tier(unsigned long *samples, bool fetch)
+void update_sample_statistics_tier(unsigned long *samples, bool code)
 {
 	int i, tier;
 
-	if (fetch) {
+	if (code) {
 		for (i = 0; i < mem_tiers; i++)
-			fetch_overall_samples[i] = 0;
+			code_overall_samples[i] = 0;
 
 		for (i = 0; i < max_nodes; i++) {
 			tier = numa_table[i].tierno;
-			fetch_overall_samples[tier] += samples[i];
+			code_overall_samples[tier] += samples[i];
 		}
 	} else {
 		for (i = 0; i < mem_tiers; i++)
-			op_overall_samples[i] = 0;
+			data_overall_samples[i] = 0;
 
 		for (i = 0; i < max_nodes; i++) {
 			tier = numa_table[i].tierno;
-			op_overall_samples[tier] += samples[i];
+			data_overall_samples[tier] += samples[i];
 		}
 	}
 }
 
-void get_sample_statistics_tier(bool fetch, unsigned long **samples, int *count)
+void get_sample_statistics_tier(bool code, unsigned long **samples, int *count)
 {
         *count   = mem_tiers;
-        *samples = (fetch) ? fetch_overall_samples : op_overall_samples;
+        *samples = (code) ? code_overall_samples : data_overall_samples;
 }
 
-static unsigned long upgrade_fetch_sample(struct bst_node **rootpp,
-					  bool balancer_mode,
-					  unsigned long total,
-					  bool user_space_only,
-					  int node, int pct)
+static unsigned long upgrade_code_sample(struct bst_node **rootpp,
+					 bool balancer_mode,
+					 unsigned long total,
+					 bool user_space_only,
+					 int node, int pct)
 {
 	int i, k, target_node, upgrade_pct;
 	unsigned long count, pages = 0;
 
-	k = (fetch_samples_cnt[node] * pct) / 100;
+	k = (code_samples_cnt[node] * pct) / 100;
 
-	for (i = fetch_samples_cnt[node] - 1; i > -1; i--) {
+	for (i = code_samples_cnt[node] - 1; i > -1; i--) {
 		float pct;
 
-		if (!fetch_samples[node][i].count)
+		if (!code_samples[node][i].count)
 			continue;
 		if (--k < 0) {
-			fetch_samples[node][i].count = 0;
+			code_samples[node][i].count = 0;
 			break;
 		}
 
-		count = fetch_samples[node][i].count;
-		pct  = (float)fetch_samples[node][i].count * 100;
+		count = code_samples[node][i].count;
+		pct  = (float)code_samples[node][i].count * 100;
 		pct /= total;
 
 		if ((!l3miss && (pct < MIN_PCT)) || count < MIN_CNT) {
-			fetch_samples[node][i].count = 0;
+			code_samples[node][i].count = 0;
 			continue;
 		}
 
 		if (!user_space_only && IBS_KERN_SAMPLE(
-						fetch_samples[node][i].ip)) {
-			fetch_samples[node][i].count = 0;
+						code_samples[node][i].ip)) {
+			code_samples[node][i].count = 0;
 			continue;
 		}
 
 		if (balancer_mode)
 			target_node = get_target_node_tier(node, true,
-						fetch_samples[node][i].counts,
+						code_samples[node][i].counts,
 						max_nodes);
     		else
 			target_node = node;
 
 		if (node != target_node) {
 			pages++;
-			bst_add_page(fetch_samples[node][i].tgid,
+			bst_add_page(code_samples[node][i].tgid,
 					target_node,
-					fetch_samples[node][i].fetch_regs[
-							IBS_FETCH_LINADDR],
+					code_samples[node][i].vaddr,
 					true,
 					rootpp);
 		}
 
-		fetch_samples[node][i].count = 0;
+		code_samples[node][i].count = 0;
 	}
 
 	return pages;
 }
 
-static unsigned long upgrade_op_sample(struct bst_node **rootpp,
-					bool balancer_mode,
-					unsigned long total,
-					bool user_space_only,
-					int node, int pct)
+static unsigned long upgrade_data_sample(struct bst_node **rootpp,
+					 bool balancer_mode,
+					 unsigned long total,
+					 bool user_space_only,
+					 int node, int pct)
 {
 	int i, k, target_node, upgrade_pct;
 	unsigned long count, pages = 0;
 
-	k = (op_samples_cnt[node] * pct) / 100;
+	k = (data_samples_cnt[node] * pct) / 100;
 
-	for (i = op_samples_cnt[node] - 1; i > -1; i--) {
+	for (i = data_samples_cnt[node] - 1; i > -1; i--) {
 		float pct;
 
-		if (!op_samples[node][i].count)
+		if (!data_samples[node][i].count)
 			continue;
 
 		if (--k < 0) {
-			op_samples[node][i].count = 0;
+			data_samples[node][i].count = 0;
 			continue;
 		}
 
-		count = op_samples[node][i].count;
-		pct  = (float)op_samples[node][i].count * 100;
+		count = data_samples[node][i].count;
+		pct  = (float)data_samples[node][i].count * 100;
 		pct /= total;
 
 		if ((!l3miss && (pct < MIN_PCT)) || count < MIN_CNT) {
-			op_samples[node][i].count = 0;
+			data_samples[node][i].count = 0;
 			continue;
 		}
 
 		if (!user_space_only && IBS_KERN_SAMPLE(
-			op_samples[node][i].op_regs[IBS_OP_RIP])) {
-			op_samples[node][i].count = 0;
+			data_samples[node][i].ip)) {
+			data_samples[node][i].count = 0;
 			continue;
    		}
 
 		if (balancer_mode)
 			target_node = get_target_node_tier(node, true,
-						op_samples[node][i].counts,
+						data_samples[node][i].counts,
 						max_nodes);
     		else
 			target_node = node;
 
 		if (node != target_node) {
 			pages++;
-			bst_add_page(op_samples[node][i].tgid,
+			bst_add_page(data_samples[node][i].tgid,
 					target_node,
-					op_samples[node][i].op_regs[
-							IBS_DC_LINADDR],
+					data_samples[node][i].vaddr,
 					true,
 					rootpp);
 		}
 
-		op_samples[node][i].count = 0;
+		data_samples[node][i].count = 0;
 	}
 
 	return pages;
@@ -783,7 +782,7 @@ static unsigned long upgrade_sample(struct bst_node **rootpp,
 				    bool balancer_mode,
 				    unsigned long total,
 				    bool user_space_only, int node,
-				    bool fetch)
+				    bool code)
 {
 	int tier, upgrade_pct;
 	unsigned long pages;
@@ -800,114 +799,110 @@ static unsigned long upgrade_sample(struct bst_node **rootpp,
 	if (upgrade_pct == 0)
 		return 0;
 
-	if (fetch)
-		pages = upgrade_fetch_sample(rootpp, balancer_mode, total,
-					     user_space_only, node,
-					     upgrade_pct);
+	if (code)
+		pages = upgrade_code_sample(rootpp, balancer_mode, total,
+					    user_space_only, node, upgrade_pct);
 	else
-		pages = upgrade_op_sample(rootpp, balancer_mode, total,
-					  user_space_only, node,
-					  upgrade_pct);
+		pages = upgrade_data_sample(rootpp, balancer_mode, total,
+					    user_space_only, node, upgrade_pct);
 
 	return pages;
 }
 
-static void downgrade_fetch_sample(struct bst_node **rootpp, bool balancer_mode,
+static void downgrade_code_sample(struct bst_node **rootpp, bool balancer_mode,
 				   unsigned long total, bool user_space_only,
 				   int node, int pct, unsigned long *pagesp)
 {
 	int i, k, target_node, upgrade_pct;
 	unsigned long count;
 
-	k = (fetch_samples_cnt[node] * pct) / 100;
+	k = (code_samples_cnt[node] * pct) / 100;
 
-	for (i = 0; i < fetch_samples_cnt[node]; i++) {
+	for (i = 0; i < code_samples_cnt[node]; i++) {
 		if (*pagesp == 0)
 			return;
-		if (!fetch_samples[node][i].count)
+		if (!code_samples[node][i].count)
 			continue;
 		if (--k < 0) {
-			fetch_samples[node][i].count = 0;
+			code_samples[node][i].count = 0;
 			break;
 		}
 
 		if (!user_space_only && IBS_KERN_SAMPLE(
-						fetch_samples[node][i].ip)) {
-			fetch_samples[node][i].count = 0;
+						code_samples[node][i].ip)) {
+			code_samples[node][i].count = 0;
 			continue;
 		}
 
 		if (balancer_mode)
 			target_node = get_target_node_tier(node, false,
-						fetch_samples[node][i].counts,
+						code_samples[node][i].counts,
 						max_nodes);
     		else
 			target_node = node;
 
 		if (node != target_node) {
 			--*pagesp;
-			bst_add_page(fetch_samples[node][i].tgid,
+			bst_add_page(code_samples[node][i].tgid,
 					target_node,
-					fetch_samples[node][i].fetch_regs[
-							IBS_FETCH_LINADDR],
+					code_samples[node][i].vaddr,
 					false,
 					rootpp);
 		}
 
-		fetch_samples[node][i].count = 0;
+		code_samples[node][i].count = 0;
 	}
 }
 
-static void downgrade_op_sample(struct bst_node **rootpp, bool balancer_mode,
-				unsigned long total, bool user_space_only,
-				int node, int pct, unsigned long *pagesp)
+static void downgrade_data_sample(struct bst_node **rootpp, bool balancer_mode,
+				  unsigned long total, bool user_space_only,
+				  int node, int pct, unsigned long *pagesp)
 {
 	int i, k, target_node, upgrade_pct;
 	unsigned long count;
 
-	k = (op_samples_cnt[node] * pct) / 100;
+	k = (data_samples_cnt[node] * pct) / 100;
 
-	for (i = 0; i < op_samples_cnt[node]; i++) {
+	for (i = 0; i < data_samples_cnt[node]; i++) {
 		if (*pagesp == 0)
 			return;
-		if (!op_samples[node][i].count)
+		if (!data_samples[node][i].count)
 			continue;
 
 		if (--k < 0) {
-			op_samples[node][i].count = 0;
+			data_samples[node][i].count = 0;
 			continue;
 		}
 
 		if (!user_space_only && IBS_KERN_SAMPLE(
-			op_samples[node][i].op_regs[IBS_OP_RIP])) {
-			op_samples[node][i].count = 0;
+			data_samples[node][i].ip)) {
+			data_samples[node][i].count = 0;
 			continue;
    		}
 
 		if (balancer_mode)
 			target_node = get_target_node_tier(node, false,
-						op_samples[node][i].counts,
+						data_samples[node][i].counts,
 						max_nodes);
     		else
 			target_node = node;
 
 		if (node != target_node) {
 			--*pagesp;
-			bst_add_page(op_samples[node][i].tgid,
+			bst_add_page(data_samples[node][i].tgid,
 					target_node,
-					op_samples[node][i].op_regs[
-							IBS_DC_LINADDR],
+					data_samples[node][i].vaddr,
 					false,
 					rootpp);
 		}
 
-		op_samples[node][i].count = 0;
+		data_samples[node][i].count = 0;
 	}
 }
 
 static void downgrade_sample(struct bst_node **rootpp, bool balancer_mode,
                            unsigned long total, bool user_space_only, int node,
-			   bool fetch, unsigned long *pagesp)
+			   bool code, unsigned long *pagesp)
 {
 	int tier, downgrade_pct;
 	assert(node >= 0 && node < max_nodes);
@@ -918,21 +913,18 @@ static void downgrade_sample(struct bst_node **rootpp, bool balancer_mode,
 		downgrade_pct = GENERIC_TIER_MIGRATION_PCT;
 	else
 		downgrade_pct = mem_tier[tier].downgrade_pct;
-	
 
 	if (downgrade_pct == 0)
 		return;
 
-	if (fetch)
-		downgrade_fetch_sample(rootpp, balancer_mode, total,
-				       user_space_only, node,
-				       downgrade_pct,
-				       pagesp);
+	if (code)
+		downgrade_code_sample(rootpp, balancer_mode, total,
+				      user_space_only, node, downgrade_pct,
+				      pagesp);
 	else
-		downgrade_op_sample(rootpp, balancer_mode, total,
-				    user_space_only, node,
-				    downgrade_pct,
-				    pagesp);
+		downgrade_data_sample(rootpp, balancer_mode, total,
+				      user_space_only, node, downgrade_pct,
+				      pagesp);
 }
 
 static int upgrade_downgrade_ratio(void)

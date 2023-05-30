@@ -14,40 +14,40 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
- * Process samples from IBS or software sampler and analyze the instruction and
- * data (if available) samples.
+ * LBR sampler : Using natie processor telemetry
  */
+#include <linux/version.h>
+#include <bpf/bpf_tracing.h>
+#include <linux/ptrace.h>
+#include <uapi/linux/bpf.h>
+#include <uapi/linux/bpf_perf_event.h>
+#include <bpf/bpf_helpers.h>
+#include <linux/perf_event.h>
+#include <bpf/bpf_helpers.h>
+#include <memory_profiler_arch.h>
 
-#ifndef _LBR_COMMON_H_
-#define _LBR_COMMON_H_
-#define MAX_LBR_SAMPLES (64 * 1024)
-struct lbr_pbe_key {
-	u64 tgid;
-	u64 from;
-	u64 to;
-};
+int other_arch_lbr_sample(struct bpf_perf_event_data *ctx,
+			  struct perf_branch_entry **firstentryout,
+			  int *entries)
+{
+	return -EINVAL;
+}
 
-struct lbr_pbe_val {
-	volatile u32 ref;
-	u32 unique;
-};
+int other_arch_sample_entry(struct perf_branch_entry *src,
+			    struct perf_branch_entry *dst)
+{
+	return -EINVAL;
+}
 
-struct lbr_pbe_flags_key {
-	u64 flags;
-	u32 unique;
-	u32 filler;
-};
-
-struct lbr_pbe_flags {
-	volatile u32 ref;
-};
-
-struct bpf_perf_event_data;
-struct perf_branch_entry;
 int lbr_sample(struct bpf_perf_event_data *ctx,
-	       struct perf_branch_entry **firstentryout, int *entries);
+	       struct perf_branch_entry **firstentryout,
+	       int *entries)
+{
+	return other_arch_lbr_sample(ctx, firstentryout, entries);
+}
 
-struct perf_branch_entry;
 int lbr_entry(struct perf_branch_entry *src,
-	      struct perf_branch_entry *dst);
-#endif
+	      struct perf_branch_entry *dst)
+{
+	return other_arch_sample_entry(src, dst);
+}

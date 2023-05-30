@@ -46,7 +46,7 @@ extern int parse_additional_bpf_programs(struct bpf_object *bpfobj);
 extern int launch_additional_bpf_programs(void);
 int terminate_additional_bpf_programs(void);
 void profiler_cleanup(int fetch_fd, int op_fd);
-unsigned long peek_ibs_samples(int fd, unsigned long old, unsigned long *new);
+unsigned long peek_samples(int fd, unsigned long old, unsigned long *new);
 
 extern char * ebpf_object_dir;
 extern unsigned int cpu_nodes;

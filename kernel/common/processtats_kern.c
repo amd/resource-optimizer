@@ -25,10 +25,10 @@
 #include <bpf/bpf_helpers.h>
 #include <linux/perf_event.h>
 #include <bpf/bpf_helpers.h>
-#include <generic_kern_amd.h>
 #include <assert.h>
-#include "membalancer_common.h"
-#include "membalancer_pvt.h"
+#include "memory_profiler_arch.h"
+#include "memory_profiler_common.h"
+#include "memory_profiler_pvt.h"
 
 static int max_num_ranges;
 struct {
@@ -105,7 +105,7 @@ static void load_numa_ranges(void)
 	max_num_ranges = i;
 }
 
-static void update_process_statistics(u64 tgid, u64 address, bool fetch)
+static void update_process_statistics(u64 tgid, u64 address, bool code)
 {
 	struct process_stats *statsp;
 	int mem_node, cpu_node = 0;
@@ -132,34 +132,40 @@ static void update_process_statistics(u64 tgid, u64 address, bool fetch)
 	inc_resource_usage(cpu_node, statsp->cpu);
 	inc_resource_usage(mem_node, statsp->memory);
 
-	if (fetch)
-		inc_ibs_fetch_samples(1);
+	if (code)
+		inc_code_samples(1);
 	else
-		inc_ibs_op_samples(1);
+		inc_data_samples(1);
 }
 
 SEC("perf_event")
 int processstats_data_sampler(struct bpf_perf_event_data *ctx)
 {
-	struct value_op *op_data;
+	struct data_sample *data;
 	int err;
-	u64 ip, tgid, key;
+	u64 tgid, key;
 
 	init_function();
 
-	op_data = alloc_value_op();
-	if (!op_data)
+	tgid = bpf_get_current_pid_tgid();
+	if (!valid_pid(tgid >> 32))
+		return -EINVAL;
+
+	data = alloc_data_sample();
+	if (!data)
 		return -ENOMEM;
 
-	memset(op_data, 0, sizeof(*op_data));
-	err = ibs_op_event(ctx, op_data, &tgid, &ip);
+	memset(data, 0, sizeof(*data));
+	data->tgid = tgid;
+
+	err = data_sampler(ctx, data);
 	if (err)
 		return err;
 
 #ifdef MEMB_USE_VA
-	key = op_data->op_regs[IBS_DC_LINADDR];
+	key = data->vaddr;
 #else
-	key = op_data->op_regs[IBS_DC_PHYSADDR];
+	key = data->paddr;
 #endif
 
 	update_process_statistics(tgid, key, false);
@@ -171,25 +177,31 @@ int processstats_data_sampler(struct bpf_perf_event_data *ctx)
 SEC("perf_event")
 int processstats_code_sampler(struct bpf_perf_event_data *ctx)
 {
-	struct value_fetch *fetch_data;
+	struct code_sample *code;
 	int err;
-	u64 ip, tgid, key;
+	u64 tgid, key;
 
 	init_function();
 
-	fetch_data = alloc_value_fetch();
-	if (!fetch_data)
+	tgid = bpf_get_current_pid_tgid();
+	if (!valid_pid(tgid >> 32))
+		return -EINVAL;
+
+	code = alloc_code_sample();
+	if (!code)
 		return -ENOMEM;
 
-	memset(fetch_data, 0, sizeof(*fetch_data));
-	err = ibs_fetch_event(ctx, fetch_data, &tgid, &ip);
+	memset(code, 0, sizeof(*code));
+	code->tgid = tgid;
+
+	err = code_sampler(ctx, code);
 	if (err)
 		return err;
 
 #ifdef MEMB_USE_VA
-	key = fetch_data->fetch_regs[IBS_FETCH_LINADDR];
+	key = code->vaddr;
 #else
-	key = fetch_data->fetch_regs[IBS_FETCH_PHYSADDR];
+	key = code->paddr;
 #endif
 
 	update_process_statistics(tgid, key, true);

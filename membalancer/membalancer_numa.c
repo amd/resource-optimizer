@@ -42,8 +42,9 @@
 #include <sys/param.h>
 #include <pthread.h>
 #include <stdatomic.h>
-
-#include "membalancer_common.h"
+#include "memory_profiler_arch.h"
+#include "memory_profiler_common.h"
+#include "thread_pool.h"
 #include "membalancer_utils.h"
 #include "membalancer_numa.h"
 
@@ -56,8 +57,8 @@ struct numa_node_mem numa_table[MAX_NUMA_NODES];
 struct numa_node_cpu numa_node_cpu[MAX_NUMA_NODES];
 int numa_cpu[MAX_CPU_CORES];
 
-static unsigned long fetch_overall_samples[MAX_NUMA_NODES];
-static unsigned long op_overall_samples[MAX_NUMA_NODES];
+static unsigned long code_overall_samples[MAX_NUMA_NODES];
+static unsigned long data_overall_samples[MAX_NUMA_NODES];
 
 #define NUMA_NODE_INFO "/sys/devices/system/node"
 
@@ -281,23 +282,23 @@ int get_target_node_numa(int node, unsigned long count, unsigned int *counts,
 	return node;
 }
 
-void update_sample_statistics_numa(unsigned long *samples, bool fetch)
+void update_sample_statistics_numa(unsigned long *samples, bool code)
 {
 	int i;
 
-	if (fetch) {
+	if (code) {
 		for (i = 0; i < max_nodes; i++)
-			fetch_overall_samples[i] = samples[i];
+			code_overall_samples[i] = samples[i];
 	} else {
 		for (i = 0; i < max_nodes; i++)
-			op_overall_samples[i] = samples[i];
+			data_overall_samples[i] = samples[i];
 	}
 }
 
-void get_sample_statistics_numa(bool fetch, unsigned long **samples, int *count)
+void get_sample_statistics_numa(bool code, unsigned long **samples, int *count)
 {
  	*count   = max_nodes;
-	*samples = (fetch) ? fetch_overall_samples : op_overall_samples;
+	*samples = (code) ? code_overall_samples : data_overall_samples;
 }
 
 void process_code_samples_numa(struct bst_node **rootpp,
@@ -313,42 +314,42 @@ void process_code_samples_numa(struct bst_node **rootpp,
 		return;
 
         for (node = 0; node < max_nodes; node++) {
-                k = (fetch_samples_cnt[node] * MIN_PCT) / 100;
-                for (i = fetch_samples_cnt[node] - 1; i > -1; i--) {
+                k = (code_samples_cnt[node] * MIN_PCT) / 100;
+                for (i = code_samples_cnt[node] - 1; i > -1; i--) {
                         float pct;
 
-                        if (!fetch_samples[node][i].count)
+                        if (!code_samples[node][i].count)
                                 continue;
 
                         if (--k < 0)  {
-                                fetch_samples[node][i].count = 0;
+                                code_samples[node][i].count = 0;
                                 continue;
                         }
 
                         count = 0;
                         for (j = 0; j < max_nodes; j++)
-                                count += fetch_samples[node][i].counts[j];
+                                count += code_samples[node][i].counts[j];
 
-                        pct  = (float)fetch_samples[node][i].count * 100;
+                        pct  = (float)code_samples[node][i].count * 100;
                         pct /= total;
 
                         if ((!l3miss && (pct < MIN_PCT)) || count < MIN_CNT) {
-                                fetch_samples[node][i].count = 0;
+                                code_samples[node][i].count = 0;
                                 continue;
                         }
 
                         if (user_space_only &&
                                 IBS_KERN_SAMPLE(
-                                        fetch_samples[node][i].ip)) {
+                                        code_samples[node][i].ip)) {
 
-                                fetch_samples[node][i].count = 0;
+                                code_samples[node][i].count = 0;
                                 continue;
                         }
 
                         if (balancer_mode) {
                                 target_node = get_target_node_numa(node,
-                                                fetch_samples[node][i].count,
-                                                fetch_samples[node][i].counts,
+                                                code_samples[node][i].count,
+                                                code_samples[node][i].counts,
                                                 max_nodes, total);
 
                         } else {
@@ -357,15 +358,14 @@ void process_code_samples_numa(struct bst_node **rootpp,
 
 
                         if (node != target_node) {
-                                bst_add_page(fetch_samples[node][i].tgid,
+                                bst_add_page(code_samples[node][i].tgid,
                                         target_node,
-                                        fetch_samples[node][i].fetch_regs[
-                                                IBS_FETCH_LINADDR],
+                                        code_samples[node][i].vaddr,
 					true,
                                         rootpp);
                         }
 
-                        fetch_samples[node][i].count = 0;
+                        code_samples[node][i].count = 0;
 
                 }
 
@@ -382,41 +382,40 @@ void process_data_samples_numa(struct bst_node **rootpp,
 	bool hdr = true;
 
 	for (node = 0; node < max_nodes; node++) {
-		k = (op_samples_cnt[node] * MIN_PCT) / 100;
-		for (i = op_samples_cnt[node] - 1; i > -1; i--) {
+		k = (data_samples_cnt[node] * MIN_PCT) / 100;
+		for (i = data_samples_cnt[node] - 1; i > -1; i--) {
 			float pct;
 
-			if (!op_samples[node][i].count)
+			if (!data_samples[node][i].count)
 				continue;
 			if (--k < 0)  {
-				op_samples[node][i].count = 0;
+				data_samples[node][i].count = 0;
 				continue;
 			}
 
 			count = 0;
 			for (j = 0; j < max_nodes; j++)
-				count += op_samples[node][i].counts[j];
+				count += data_samples[node][i].counts[j];
 
-			pct  = (float)op_samples[node][i].count * 100;
+			pct  = (float)data_samples[node][i].count * 100;
 			pct /= total;
 
 			if ((!l3miss && (pct < MIN_PCT)) || count < MIN_CNT) {
-				op_samples[node][i].count = 0;
+				data_samples[node][i].count = 0;
 				continue;
 			}
 
 			if (!user_space_only &&
 					IBS_KERN_SAMPLE(
-						op_samples[node][i].op_regs[IBS_OP_RIP])) {
-
-				op_samples[node][i].count = 0;
+						data_samples[node][i].ip)) {
+				data_samples[node][i].count = 0;
 				continue;
 			}
 
 			if (balancer_mode) {
 				target_node = get_target_node_numa(node,
-						op_samples[node][i].count,
-						op_samples[node][i].counts,
+						data_samples[node][i].count,
+						data_samples[node][i].counts,
 						max_nodes, total);
 			} else {
 				target_node = node;
@@ -424,15 +423,14 @@ void process_data_samples_numa(struct bst_node **rootpp,
 
 
 			if (node != target_node) {
-				bst_add_page(op_samples[node][i].tgid,
+				bst_add_page(data_samples[node][i].tgid,
 						target_node,
-						op_samples[node][i].op_regs[
-						IBS_DC_LINADDR],
+						data_samples[node][i].vaddr,
 						true,
 						rootpp);
 			}
 
-			op_samples[node][i].count = 0;
+			data_samples[node][i].count = 0;
 		}
 	}
 }

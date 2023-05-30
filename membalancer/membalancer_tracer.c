@@ -26,7 +26,6 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
  */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
@@ -42,13 +41,14 @@
 #include <sys/mman.h>
 #define __USE_GNU
 #include <search.h>
-
-#include "membalancer_common.h"
+#include "memory_profiler_common.h"
+#include "memory_profiler_arch.h"
+#include "thread_pool.h"
 #include "membalancer_utils.h"
 #include "membalancer_numa.h"
 
-static unsigned long fetch_overall_samples[MAX_NUMA_NODES];
-static unsigned long op_overall_samples[MAX_NUMA_NODES];
+static unsigned long code_overall_samples[MAX_NUMA_NODES];
+static unsigned long data_overall_samples[MAX_NUMA_NODES];
 static char *tracer_dir;
 
 #define NUMA_NODE_INFO "/sys/devices/system/node"
@@ -68,7 +68,7 @@ struct page_ref {
 struct page {
 	unsigned long vaddr;
 	unsigned long paddr;
-        unsigned long pageref;
+	unsigned long pageref;
 };
 
 struct bst_node {
@@ -126,16 +126,16 @@ struct tracer_stats {
 	};
 };
 
-static struct bst_node *fetch_nodes_array;
-static struct bst_node *op_nodes_array;
-static unsigned long max_fetch_nodes = (1024 * 1024);
-static unsigned long max_op_nodes    = (1024 * 1024);
-static unsigned long cur_fetch_nodes;
-static unsigned long cur_op_nodes;
+static struct bst_node *code_nodes_array;
+static struct bst_node *data_nodes_array;
+static unsigned long max_code_nodes = (1024 * 1024);
+static unsigned long max_data_nodes = (1024 * 1024);
+static unsigned long cur_code_nodes;
+static unsigned long cur_data_nodes;
 
 enum {
-	FETCH_ENTRY,
-	OP_ENTRY,
+	CODE_ENTRY,
+	DATA_ENTRY,
 };
 
 struct tracer_entry {
@@ -151,17 +151,18 @@ void update_sample_statistics_tracer(unsigned long *samples, bool fetch)
 
 	if (fetch) {
 		for (i = 0; i < max_nodes; i++)
-			fetch_overall_samples[i] = samples[i];
+			code_overall_samples[i] = samples[i];
 	} else {
 		for (i = 0; i < max_nodes; i++)
-			op_overall_samples[i] = samples[i];
+			data_overall_samples[i] = samples[i];
 	}
 }
 
-void get_sample_statistics_tracer(bool fetch, unsigned long **samples, int *count)
+void get_sample_statistics_tracer(bool code, unsigned long **samples,
+				  int *count)
 {
 	*count   = max_nodes;
-	*samples = (fetch) ? fetch_overall_samples : op_overall_samples;
+	*samples = (code) ? code_overall_samples : data_overall_samples;
 }
 
 static int tracer_open_file(const char *file)
@@ -200,12 +201,12 @@ void process_code_samples_tracer(struct bst_node **rootpp,
 				 unsigned long total,
 				 bool user_space_only)
 {
-        int i, j, node, logfd;
-        unsigned long count;
+	int i, j, node, logfd;
+	unsigned long count;
 
 
-        if (!total)
-                return;
+	if (!total)
+		return;
 
 	logfd = tracer_open_file("fetch");
 	if (logfd < 0) {
@@ -213,45 +214,41 @@ void process_code_samples_tracer(struct bst_node **rootpp,
 		return;
 	}
 
-        for (node = 0; node < max_nodes; node++) {
-                for (i = fetch_samples_cnt[node] - 1; i > -1; i--) {
-                        float pct;
+	for (node = 0; node < max_nodes; node++) {
+		for (i = code_samples_cnt[node] - 1; i > -1; i--) {
+			float pct;
 
-                        if (!fetch_samples[node][i].count)
-                                continue;
+			if (!code_samples[node][i].count)
+				continue;
 
-                        count = 0;
-                        for (j = 0; j < max_nodes; j++)
-                                count += fetch_samples[node][i].counts[j];
+			count = 0;
+			for (j = 0; j < max_nodes; j++)
+				count += code_samples[node][i].counts[j];
 
-                        pct  = (float)fetch_samples[node][i].count * 100;
-                        pct /= total;
+			pct  = (float)code_samples[node][i].count * 100;
+			pct /= total;
 
-                        /*
-                        if (pct < min_pct || count < MIN_CNT) {
-                                fetch_samples[node][i].count = 0;
-                                continue;
-                        }
-                        */
+			/*
+			if (pct < min_pct || count < MIN_CNT) {
+				code_samples[node][i].count = 0;
+				continue;
+			}
+			*/
 
-                        if (user_space_only &&
-                                IBS_KERN_SAMPLE(
-                                        fetch_samples[node][i].ip)) {
+			if (user_space_only &&
+				KERN_SAMPLE(code_samples[node][i].ip)) {
+				code_samples[node][i].count = 0;
+				continue;
+			}
 
-                                fetch_samples[node][i].count = 0;
-                                continue;
-                        }
+			tracer_log_entry(logfd, CODE_ENTRY,
+					 code_samples[node][i].vaddr,
+					 code_samples[node][i].paddr,
+					 code_samples[node][i].count);
 
-			tracer_log_entry(logfd, FETCH_ENTRY,
-					 fetch_samples[node][i].fetch_regs[
-						IBS_FETCH_LINADDR],
-					 fetch_samples[node][i].fetch_regs[
-						IBS_FETCH_PHYSADDR],
-					 fetch_samples[node][i].count);
-
-                        fetch_samples[node][i].count = 0;
-                }
-        }
+			code_samples[node][i].count = 0;
+		}
+	}
 
 	fdatasync(logfd);
 	close(logfd);
@@ -261,8 +258,8 @@ void process_data_samples_tracer(struct bst_node **rootpp,
 				 unsigned long total,
 				 bool user_space_only)
 {
-        int i, j, node, logfd;
-        unsigned long count;
+	int i, j, node, logfd;
+	unsigned long count;
 
 	logfd = tracer_open_file("op");
 	if (logfd < 0) {
@@ -270,44 +267,41 @@ void process_data_samples_tracer(struct bst_node **rootpp,
 		return;
 	}
 
-        for (node = 0; node < max_nodes; node++) {
-                for (i = op_samples_cnt[node] - 1; i > -1; i--) {
-                        float pct;
+	for (node = 0; node < max_nodes; node++) {
+		for (i = data_samples_cnt[node] - 1; i > -1; i--) {
+			float pct;
 
-                        if (!op_samples[node][i].count)
-                                continue;
+			if (!data_samples[node][i].count)
+				continue;
 
-                        count = 0;
-                        for (j = 0; j < max_nodes; j++)
-                                count += op_samples[node][i].counts[j];
+			count = 0;
+			for (j = 0; j < max_nodes; j++)
+				count += data_samples[node][i].counts[j];
 
-                        pct  = (float)op_samples[node][i].count * 100;
-                        pct /= total;
-                        /*
-                        if (pct < min_pct || count < MIN_CNT) {
-                                op_samples[node][i].count = 0;
-                                continue;
-                        }
-                        */
+			pct  = (float)data_samples[node][i].count * 100;
+			pct /= total;
+			/*
+			if (pct < min_pct || count < MIN_CNT) {
+				data_samples[node][i].count = 0;
+				continue;
+			}
+			*/
 
-                        if (!user_space_only &&
-                                IBS_KERN_SAMPLE(
-                                op_samples[node][i].op_regs[IBS_OP_RIP])) {
+			if (!user_space_only &&
+				IBS_KERN_SAMPLE(
+				data_samples[node][i].ip)) {
+				data_samples[node][i].count = 0;
+				continue;
+			}
 
-                                op_samples[node][i].count = 0;
-                                continue;
-                        }
+			tracer_log_entry(logfd, DATA_ENTRY,
+					 data_samples[node][i].vaddr,
+					 data_samples[node][i].paddr,
+					 data_samples[node][i].count);
 
-			tracer_log_entry(logfd, OP_ENTRY,
-					 op_samples[node][i].op_regs[
-						IBS_DC_LINADDR],
-					 op_samples[node][i].op_regs[
-						IBS_DC_PHYSADDR],
-					 op_samples[node][i].count);
-
-                        op_samples[node][i].count = 0;
-                }
-        }
+			data_samples[node][i].count = 0;
+		}
+	}
 
 	fdatasync(logfd);
 	close(logfd);
@@ -420,68 +414,67 @@ static void update_node(int type, unsigned long baseaddr, unsigned long vaddr,
 
 static int bst_cmp(const void *firstp, const void *secondp)
 {
-        struct bst_node *first  = (struct bst_node *)firstp;
-        struct bst_node *second = (struct bst_node *)secondp;
+	struct bst_node *first  = (struct bst_node *)firstp;
+	struct bst_node *second = (struct bst_node *)secondp;
 
 	if (first->basepage < second->basepage)
 		return -1;
 
 	if (first->basepage > second->basepage)
 		return 1;
-	
+
 	return 0;
 }
 
 /*
 static void dealloc_node(int type, struct bst_node *node)
 {
-	if (type == FETCH_ENTRY)
-		--cur_fetch_nodes;
+	if (type == CODE_ENTRY)
+		--cur_code_nodes;
 	else
-		--cur_op_nodes;
+		--cur_data_nodes;
 }
 */
 
 static struct bst_node * alloc_node(int type)
 {
 	struct bst_node *node;
-	if (type == FETCH_ENTRY) {
-		if (!fetch_nodes_array) {
-			fetch_nodes_array = malloc(sizeof(*node) *
-						  max_fetch_nodes);
-			if (!fetch_nodes_array)
+	if (type == CODE_ENTRY) {
+		if (!code_nodes_array) {
+			code_nodes_array = malloc(sizeof(*node) *
+						  max_code_nodes);
+			if (!code_nodes_array)
 				return NULL;
 		}
 
-		node = &fetch_nodes_array[cur_fetch_nodes];
-		if (++cur_fetch_nodes >= max_fetch_nodes) {
-			fetch_nodes_array = realloc(fetch_nodes_array,
+		node = &code_nodes_array[cur_code_nodes];
+		if (++cur_code_nodes >= max_code_nodes) {
+			code_nodes_array = realloc(code_nodes_array,
 						   sizeof(*node) * 2 *
-						   max_fetch_nodes);
-			if (!fetch_nodes_array)
+						   max_code_nodes);
+			if (!code_nodes_array)
 				return NULL;
 
-			max_fetch_nodes *= 2;
-	
+			max_code_nodes *= 2;
 		}
 
 		return node;
 	}
 
-	if (!op_nodes_array)
-		op_nodes_array = malloc(sizeof(*node) * max_op_nodes);
+	if (!data_nodes_array)
+		data_nodes_array = malloc(sizeof(*node) * max_data_nodes);
 
-	if (!op_nodes_array)
+	if (!data_nodes_array)
 		return NULL;
 
-	node = &op_nodes_array[cur_op_nodes];
-	if (++cur_op_nodes >= max_op_nodes) {
-		op_nodes_array = realloc(op_nodes_array, sizeof(*node) *
-					 max_op_nodes * 2);
-		if (!op_nodes_array)
+	node = &data_nodes_array[cur_data_nodes];
+	if (++cur_data_nodes >= max_data_nodes) {
+		data_nodes_array = realloc(data_nodes_array, sizeof(*node) *
+					 max_data_nodes * 2);
+		if (!data_nodes_array)
 			return NULL;
 
-		max_op_nodes *= 2;
+		max_data_nodes *= 2;
 	}
 
 	return node;
@@ -490,20 +483,20 @@ static struct bst_node * alloc_node(int type)
 static int add_to_bst(struct bst_node **root, int type, unsigned vaddr,
 		      unsigned paddr, int refcnt, bool physical_mode)
 {
-        struct bst_node *node, *new_node, **nodepp;
-        struct bst_node_dummy dummy;
+	struct bst_node *node, *new_node, **nodepp;
+	struct bst_node_dummy dummy;
 
-        dummy.basepage = (physical_mode) ? paddr : vaddr;
+	dummy.basepage = (physical_mode) ? paddr : vaddr;
 	dummy.basepage &= ~(base_page_size - 1);
-        if (*root) {
-                nodepp = tfind(&dummy, (void **)root, bst_cmp);
+	if (*root) {
+		nodepp = tfind(&dummy, (void **)root, bst_cmp);
      		if (nodepp) {
-                        node = *nodepp;
+			node = *nodepp;
 			update_node(type, dummy.basepage, vaddr, paddr, refcnt,	
 				    node, physical_mode);
 			return 0;
-                }
-        }
+		}
+	}
 
 	new_node = alloc_node(type);
 	if (!new_node)
@@ -586,8 +579,8 @@ static int node_cmp(const void *p1, const void *p2)
 	return 0;
 }
 
-static unsigned long collect_fetch_statistics(
-				struct bst_node **fetch_root,
+static unsigned long collect_code_statistics(
+				struct bst_node **code_root,
 				bool physical_mode)
 {
 	int fd, err;
@@ -604,10 +597,10 @@ static unsigned long collect_fetch_statistics(
 
 	entry = addr;
 
-	assert(*fetch_root == NULL);
-	
+	assert(*code_root == NULL);
+
 	for (i = 0; i < size /sizeof(*entry); i++) {
-		err = add_to_bst(fetch_root, FETCH_ENTRY, entry->vaddr,
+		err = add_to_bst(code_root, CODE_ENTRY, entry->vaddr,
 				 entry->paddr, entry->count,
 				 physical_mode);
 		if (err)
@@ -616,7 +609,7 @@ static unsigned long collect_fetch_statistics(
 		entry++;
 	}
 
-	qsort(fetch_nodes_array, cur_fetch_nodes, sizeof(*fetch_nodes_array),
+	qsort(code_nodes_array, cur_code_nodes, sizeof(*code_nodes_array),
 	      node_cmp);
 
 	unmap_file(fd, addr, size);
@@ -624,7 +617,7 @@ static unsigned long collect_fetch_statistics(
 	return count;
 }
 
-static unsigned long collect_op_statistics(struct bst_node **op_root,
+static unsigned long collect_data_statistics(struct bst_node **data_root,
 					   bool physical_mode)
 {
 	int fd, err;
@@ -640,10 +633,10 @@ static unsigned long collect_op_statistics(struct bst_node **op_root,
 		return 0;
 
 	entry = addr;
-	
-	assert(*op_root == NULL);
+
+	assert(*data_root == NULL);
 	for (i = 0; i < size /sizeof(*entry); i++) {
-		err = add_to_bst(op_root, OP_ENTRY, entry->vaddr,
+		err = add_to_bst(data_root, CODE_ENTRY, entry->vaddr,
 				 entry->paddr, entry->count,
 				 physical_mode);
 		if (err)
@@ -652,7 +645,8 @@ static unsigned long collect_op_statistics(struct bst_node **op_root,
 		entry++;
 	}
 
-	qsort(op_nodes_array, cur_op_nodes, sizeof(*op_nodes_array), node_cmp);
+	qsort(data_nodes_array, cur_data_nodes, sizeof(*data_nodes_array),
+		node_cmp);
 
 	unmap_file(fd, addr, size);
 
@@ -664,7 +658,7 @@ static void do_nothing(void *arg)
 }
 
 static void update_stats(unsigned total, unsigned long count,
-		         struct tracer_stats  *stats)
+			 struct tracer_stats  *stats)
 {
 
 	if ((count * 100 / total) >= 10) {
@@ -752,7 +746,7 @@ static void process_page_ref(struct page *page,
 	}
 }
 
-static void process_fetch_statistics(struct bst_node *fetch_root,
+static void process_code_statistics(struct bst_node *code_root,
 				     unsigned long count,
 				     struct tracer_stats *stats,
 				     struct page_ref *pages_used,
@@ -761,30 +755,30 @@ static void process_fetch_statistics(struct bst_node *fetch_root,
 {
 	unsigned long i;
 
-	if (!cur_fetch_nodes)
+	if (!cur_code_nodes)
 		return;
 	if (!count)
 		return;
 
-	stats->unique_pages = cur_fetch_nodes;
+	stats->unique_pages = cur_code_nodes;
 	stats->samples      = count;
 
-	for (i = 0; i < cur_fetch_nodes; i++) {
-		update_stats(count, fetch_nodes_array[i].count, stats);
-		if (fetch_nodes_array[i].count)
-			process_page_ref(fetch_nodes_array[i].page,
+	for (i = 0; i < cur_code_nodes; i++) {
+		update_stats(count, code_nodes_array[i].count, stats);
+		if (code_nodes_array[i].count)
+			process_page_ref(code_nodes_array[i].page,
 					 pages, pages_used, pages_unused);
 	}
 
-	free(fetch_nodes_array);
-	cur_fetch_nodes = 0;
-	fetch_nodes_array = NULL;
+	free(code_nodes_array);
+	cur_code_nodes = 0;
+	code_nodes_array = NULL;
 
-	//tdestroy(fetch_root, do_nothing);
-	fetch_root = NULL;
+	//tdestroy(code_root, do_nothing);
+	code_root = NULL;
 }
 
-static void process_op_statistics(struct bst_node *op_root,
+static void process_data_statistics(struct bst_node *data_root,
 				  unsigned long count,
 				  struct tracer_stats *stats,
 				  struct page_ref *pages_used,
@@ -793,28 +787,28 @@ static void process_op_statistics(struct bst_node *op_root,
 {
 	unsigned long i;
 
-	if (!cur_op_nodes)
+	if (!cur_data_nodes)
 		return;
 
 	if (!count)
 		return;
 
-	stats->unique_pages = cur_op_nodes;
+	stats->unique_pages = cur_data_nodes;
 	stats->samples      = count;
 
-	for (i = 0; i < cur_op_nodes; i++) {
-		update_stats(count, op_nodes_array[i].count, stats);
-		if (op_nodes_array[i].count)
-			process_page_ref(op_nodes_array[i].page,
+	for (i = 0; i < cur_data_nodes; i++) {
+		update_stats(count, data_nodes_array[i].count, stats);
+		if (data_nodes_array[i].count)
+			process_page_ref(data_nodes_array[i].page,
 					pages, pages_used, pages_unused);
 	}
 
-	free(op_nodes_array);
-	cur_op_nodes = 0;
-	op_nodes_array = NULL;
+	free(data_nodes_array);
+	cur_data_nodes = 0;
+	data_nodes_array = NULL;
 
-	//tdestroy(op_root, do_nothing);
-	op_root = NULL;
+	//tdestroy(data_root, do_nothing);
+	data_root = NULL;
 }
 
 static void print_stats(struct tracer_stats *stats, bool text)
@@ -822,7 +816,7 @@ static void print_stats(struct tracer_stats *stats, bool text)
 	int i;
 	char *type;
 	float pct;
-	
+
 	if (!stats->samples)
 		return;
 
@@ -834,9 +828,9 @@ static void print_stats(struct tracer_stats *stats, bool text)
 		type = "DATA";
 
  	if (text)
-                printf("%s%s%s", BRIGHT, MAGENTA, ULINE);
-        else
-                printf("%s%s%s", BRIGHT, CYAN, ULINE);
+		printf("%s%s%s", BRIGHT, MAGENTA, ULINE);
+	else
+		printf("%s%s%s", BRIGHT, CYAN, ULINE);
 
   
 	printf("%-10s %-10s %-12s %-10s\n",
@@ -852,17 +846,17 @@ static void print_stats(struct tracer_stats *stats, bool text)
 		pct = (float)(stats->ccount[i] * 100) / stats->samples;
 
 		if (pct >= 10.0)
-                	printf("%s%s", BRIGHT, BRED);
-        	else if (pct >= 5.0)
-                	printf("%s", BRED);
-        	else if (pct >= 2.0)
-                	printf("%s%s", BRIGHT, BMAGENTA);
-        	else if (pct >= 1.0)
-                	printf("%s%s", BRIGHT, BBLUE);
-        	else if (pct >= 0.1)
-                	printf("%s", BBLUE);
-        	else
-                	printf("%s", BCYAN);
+			printf("%s%s", BRIGHT, BRED);
+		else if (pct >= 5.0)
+			printf("%s", BRED);
+		else if (pct >= 2.0)
+			printf("%s%s", BRIGHT, BMAGENTA);
+		else if (pct >= 1.0)
+			printf("%s%s", BRIGHT, BBLUE);
+		else if (pct >= 0.1)
+			printf("%s", BBLUE);
+		else
+			printf("%s", BCYAN);
 
 		printf("%-10s %-10s %-12d %5.2f%%",
 			type,
@@ -881,9 +875,9 @@ static void print_stats(struct tracer_stats *stats, bool text)
 
 	printf("\n");
  	if (text)
-                printf("%s%s", BRIGHT, MAGENTA);
-        else
-                printf("%s%s", BRIGHT, CYAN);
+		printf("%s%s", BRIGHT, MAGENTA);
+	else
+		printf("%s%s", BRIGHT, CYAN);
 
 	printf("Total %s samples %ld base page size %lu\n",
 		type, stats->samples, base_page_size);
@@ -981,17 +975,17 @@ static void print_pagerefs(struct page_ref *used, struct page_ref *unused,
 void report_tracer_statistics(void)
 {
 	bool physical_mode = tracer_physical_mode;
-	struct bst_node *fetch_root = NULL;
-	struct bst_node *op_root = NULL;
-	unsigned long fetches, ops;
-	struct tracer_stats fetch_stats, op_stats;
+	struct bst_node *code_root = NULL;
+	struct bst_node *data_root = NULL;
+	unsigned long code_cnt, data_cnt;
+	struct tracer_stats code_stats, data_stats;
 	struct page_ref *pages_used, *pages_unused;
 	int i, pages;
 
 	pages = base_page_size / PAGE_SIZE;
 
-	memset(&fetch_stats, 0, sizeof(fetch_stats));
-	memset(&op_stats, 0, sizeof(op_stats));
+	memset(&code_stats, 0, sizeof(code_stats));
+	memset(&data_stats, 0, sizeof(data_stats));
 
 	pages_used = malloc(sizeof(*pages_used) * pages);
 	if (!pages_used)
@@ -1014,28 +1008,28 @@ void report_tracer_statistics(void)
 		pages_unused[i].access_count = 0;
 		pages_unused[i].access_count2 = 0;
 	}
-		
-	fetches = collect_fetch_statistics(&fetch_root, physical_mode);
-	ops     = collect_op_statistics(&op_root, physical_mode);
 
-	if (!fetches && !ops) {
+	code_cnt = collect_code_statistics(&code_root, physical_mode);
+	data_cnt = collect_data_statistics(&data_root, physical_mode);
+
+	if (!code_cnt && !data_cnt) {
 		free(pages_used);
 		free(pages_unused);
 		return;
 	}
 
-	process_fetch_statistics(op_root, fetches, &fetch_stats,
+	process_code_statistics(data_root, code_cnt, &code_stats,
 				 pages_used, pages_unused, pages);
-	process_op_statistics(op_root, ops, &op_stats,
+	process_data_statistics(data_root, data_cnt, &data_stats,
 			      pages_used, pages_unused, pages);
 
 	qsort(pages_unused, pages, sizeof(*pages_unused), pageref_cmp);
 	qsort(pages_used, pages, sizeof(*pages_used), pageref_cmp);
 
-	print_stats(&fetch_stats, true);
-	print_stats(&op_stats, false);
+	print_stats(&code_stats, true);
+	print_stats(&data_stats, false);
 	print_pagerefs(pages_used, pages_unused, pages,
-		       fetches + ops);
+		       code_cnt + data_cnt);
 
 	free(pages_used);
 	free(pages_unused);

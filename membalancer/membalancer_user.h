@@ -55,11 +55,11 @@ enum tuning_profile {
 };
 
 enum map_fd_elems {
-	IBS_FETCH_MAP,
-	IBS_OP_MAP,
+	CODE_MAP,
+	DATA_MAP,
 	PROC_STAT_MAP,
-	FETCH_COUNTER_MAP,
-	OP_COUNTER_MAP,
+	CODE_COUNTER_MAP,
+	DATA_COUNTER_MAP,
 	KNOBS,
 	LBR_PBE,
 	LBR_PBE_FLAGS,
@@ -67,8 +67,8 @@ enum map_fd_elems {
 };
 
 enum bpf_programs {
-	IBS_CODE_SAMPLER,
-	IBS_DATA_SAMPLER,
+	CODE_SAMPLER,
+	DATA_SAMPLER,
 	LBR_SAMPLER,
 	NON_IBS_CODE_SAMPLER,
 	TOTAL_BPF_PROGRAMS
@@ -117,11 +117,11 @@ static char * additional_programs_name[ADDITIONAL_PROGRAMS] = {
  */
 
 static char *memory_map_fd_names[TOTAL_MAPS] = {
-	"ibs_fetch_map",
-	"ibs_op_map",
+	"code_sample_map",
+	"data_sample_map",
 	NULL,
-	"fetch_counter",
-	"op_counter",
+	"code_samples_counter",
+	"data_samples_counter",
 	"knobs",
 	NULL,
  	NULL,
@@ -131,19 +131,19 @@ static char *process_map_fd_names[TOTAL_MAPS] = {
  	NULL,
 	NULL,
 	"process_stats_map",
-	"fetch_counter",
-	"op_counter",
+	"code_samples_counter",
+	"data_samples_counter",
 	"knobs",
  	NULL,
 	NULL
 };
 
 static char *profiler_map_fd_names[TOTAL_MAPS] = {
-	"ibs_fetch_map",
-	"ibs_op_map",
+	"code_sample_map",
+	"data_sample_map",
 	NULL,
-	"fetch_counter",
-	"op_counter",
+	"code_samples_counter",
+	"data_samples_counter",
 	"knobs",
 };
 

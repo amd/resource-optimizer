@@ -36,27 +36,28 @@
 #include<stdbool.h>
 #include<sys/types.h>
 
-#include "thread_pool.h"
-#include "membalancer_common.h"
-
-struct ibs_fetch_sample {
-        unsigned long ip;
-        unsigned int count;
-        unsigned int counts[MAX_NUMA_NODES];
-        unsigned int latency[MAX_LATENCY_IDX];
+struct code_samples {
         unsigned long tgid;
-        char  process[PROCESSNAMELEN];
-        unsigned long fetch_regs[IBSFETCH_REG_COUNT];
+        unsigned long ip;
+        unsigned long vaddr;
+        unsigned long paddr;
+        unsigned int  count;
+        unsigned int  filler;
+        unsigned int  counts[MAX_NUMA_NODES];
+        unsigned int  latency[MAX_LATENCY_IDX];
+        char          process[PROCESSNAMELEN];
 };
 
-struct ibs_op_sample {
-        unsigned long ip;
-        unsigned int count;
-        unsigned int counts[MAX_NUMA_NODES];
-        unsigned int latency[MAX_LATENCY_IDX];
+struct data_samples {
         unsigned long tgid;
+        unsigned long ip;
+        unsigned long vaddr;
+        unsigned long paddr;
+        unsigned int  count;
+        unsigned int  filler;
+        unsigned int  counts[MAX_NUMA_NODES];
+        unsigned int  latency[MAX_LATENCY_IDX];
         char          process[PROCESSNAMELEN];
-        unsigned long op_regs[IBSOP_REG_COUNT];
 };
 
 #define node_load_avg_threshold 70
@@ -98,14 +99,16 @@ extern bool do_migration;
 extern bool l3miss;
 
 extern cpu_set_t node_cpumask[MAX_NUMA_NODES];
-extern struct ibs_fetch_sample fetch_samples[MAX_NUMA_NODES][MAX_IBS_SAMPLES];
-extern unsigned long fetch_samples_max[MAX_NUMA_NODES];
-extern unsigned long fetch_samples_cnt[MAX_NUMA_NODES];
+extern struct code_samples code_samples[MAX_NUMA_NODES][MAX_SAMPLES];
+extern unsigned long code_samples_max[MAX_NUMA_NODES];
+extern unsigned long code_samples_cnt[MAX_NUMA_NODES];
 
-extern struct ibs_op_sample op_samples[MAX_NUMA_NODES][MAX_IBS_SAMPLES];
-extern unsigned long op_samples_max[MAX_NUMA_NODES];
-extern unsigned long op_samples_cnt[MAX_NUMA_NODES];
+extern struct data_samples data_samples[MAX_NUMA_NODES][MAX_SAMPLES];
+extern unsigned long data_samples_max[MAX_NUMA_NODES];
+extern unsigned long data_samples_cnt[MAX_NUMA_NODES];
+
 extern bool tracer_physical_mode;
+extern atomic64_t status_code_cnt, status_data_cnt;
 
 struct bst_node;
 int bst_add_page(pid_t pid, int to_node, unsigned long addr,
@@ -172,11 +175,11 @@ extern int iprofiler;
 #define BWHITE   "\x1B[47m"
 #define WHITE   "\x1B[37m"
 
-extern unsigned int min_ibs_samples;
-#define MIN_IBS_CLASSIC_SAMPLES 200
-#define MIN_IBS_L3MISS_SAMPLES  200
-#define MIN_IBS_SAMPLES min_ibs_samples
-#define MIN_IBS_FETCH_SAMPLES (MIN_IBS_SAMPLES / 4)
-#define MIN_IBS_OP_SAMPLES    (MIN_IBS_SAMPLES / 2)
+extern unsigned int min_samples;
+#define MIN_CLASSIC_SAMPLES 500 /* Tune if needed */
+#define MIN_L3MISS_SAMPLES  500 /* Tune if needed */
+#define MIN_SAMPLES min_samples
+#define MIN_CODE_SAMPLES (MIN_SAMPLES / 4)
+#define MIN_DATA_SAMPLES (MIN_SAMPLES / 2)
 
 #endif

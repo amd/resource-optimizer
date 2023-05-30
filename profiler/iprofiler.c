@@ -50,9 +50,10 @@
 #include <sys/wait.h>
 #include <ctype.h>
 #include <search.h>
-
 #include <linux/close_range.h>
-#include "membalancer_common.h"
+#include "memory_profiler_arch.h"
+#include "memory_profiler_common.h"
+#include "thread_pool.h"
 #include "membalancer_utils.h"
 #include "membalancer_numa.h"
 #include "membalancer_utils.h"
@@ -72,7 +73,8 @@
 
 #define MIN_FOR_LATENCY 10
 static int light_semaphore;
-#define MIN_SAMPLES 1000
+#undef MIN_SAMPLES
+#define MIN_SAMPLES 500
 
 struct function_info {
 	u64  ip;
@@ -101,15 +103,15 @@ static struct process_info process_info[MAX_PIDS];
 static struct process_info *root_process_info;
 static unsigned int next_process_info;
 
-static struct code_ref code_ref[MAX_IBS_SAMPLES];
+static struct code_ref code_ref[MAX_SAMPLES];
 static struct process_info *root_code_ref;
 static u32 next_code_ref;
-static u64 code_samples;
+static u64 code_sample_count;
 
-static struct code_ref data_ref[MAX_IBS_SAMPLES];
+static struct code_ref data_ref[MAX_SAMPLES];
 static struct process_info *root_data_ref;
 static u32 next_data_ref;
-static u64 data_samples;
+static u64 data_sample_count;
 
 static int pid_cmp(const void *firstp, const void *secondp)
 {
@@ -340,14 +342,14 @@ static int add_code_ref(pid_t pid, u64 key, u32 count, u32 *latency,
 			ref = *refpp;
 			assert(ref->key == key);
 			latency_add(ref, count, latency);
-			code_samples += count;
+			code_sample_count += count;
 			ref->ref += count;
-			assert(ref->ref <= code_samples);
+			assert(ref->ref <= code_sample_count);
 			return 0;
 		}
 	}
 
-	if (next_code_ref >= MAX_IBS_SAMPLES)
+	if (next_code_ref >= MAX_SAMPLES)
 		return -ENOMEM;
 
 	ref = &code_ref[next_code_ref];
@@ -365,7 +367,7 @@ static int add_code_ref(pid_t pid, u64 key, u32 count, u32 *latency,
 
 	assert(*new == ref);
 
-	code_samples += count;
+	code_sample_count += count;
 	next_code_ref++;
 	ref->ref = count;
 
@@ -390,12 +392,12 @@ static int add_data_ref(pid_t pid, u64 ip, u64 key, u32 count, u32 *latency,
 			assert(ref->key == key);
 			ref->ref += count;
 			latency_add(ref, count, latency);
-			data_samples += count;
+			data_sample_count += count;
 			return 0;
 		}
 	}
 
-	if (next_data_ref >= MAX_IBS_SAMPLES)
+	if (next_data_ref >= MAX_SAMPLES)
 		return -ENOMEM;
 
 	ref = &data_ref[next_data_ref];
@@ -413,7 +415,7 @@ static int add_data_ref(pid_t pid, u64 ip, u64 key, u32 count, u32 *latency,
 
 	assert(*new == ref);
 
-	data_samples += count;
+	data_sample_count += count;
 	next_data_ref++;
 	ref->ref = count;
 
@@ -438,7 +440,7 @@ static int add_sample(u64 tgid, u64 key, u64 ip, u32 count, u32 *latency,
 		return err;
 
 	func = function_info_get(info, ip);
-	if (!func && !IBS_KERN_SAMPLE(ip))
+	if (!func && !KERN_SAMPLE(ip))
 		return -EINVAL;
 
 	if (code)
@@ -463,20 +465,22 @@ static void process_code_samples(unsigned long total, bool user_space_only)
 	u64 j, ip;
 
 	for (i = 0; i < max_nodes; i++) {
-		for (j = 0; j < fetch_samples_cnt[i]; j++) {
-			if (fetch_samples[i][j].count == 0)
+		for (j = 0; j < code_samples_cnt[i]; j++) {
+			if (code_samples[i][j].count == 0)
 				continue;
 
-			ip = fetch_samples[i][j].ip;
-			add_sample(fetch_samples[i][j].tgid,
+			assert(code_samples[i][j].count < 100000);
+
+			ip = code_samples[i][j].ip;
+			add_sample(code_samples[i][j].tgid,
 				   ip, ip,
-				   fetch_samples[i][j].count,
-				   fetch_samples[i][j].latency,
+				   code_samples[i][j].count,
+				   code_samples[i][j].latency,
 				   true);
 
-			fetch_samples[i][j].count = 0;
+			code_samples[i][j].count = 0;
 		}
-		fetch_samples_cnt[i] = 0;
+		code_samples_cnt[i] = 0;
 	}
 }
 
@@ -486,45 +490,42 @@ static void process_data_samples(unsigned long total, bool user_space_only)
 	u64 j, ip, key;
 
 	for (i = 0; i < max_nodes; i++) {
-		for (j = 0; j < op_samples_cnt[i]; j++) {
-			if (op_samples[i][j].count == 0)
+		for (j = 0; j < data_samples_cnt[i]; j++) {
+			if (data_samples[i][j].count == 0)
 				continue;
 
-			ip = op_samples[i][j].ip;
-			key = op_samples[i][j].op_regs[IBS_DC_LINADDR];
-			add_sample(op_samples[i][j].tgid,
+			assert(data_samples[i][j].count < 100000);
+			ip = data_samples[i][j].ip;
+			key = data_samples[i][j].vaddr;
+			add_sample(data_samples[i][j].tgid,
 				   key, ip,
-				   op_samples[i][j].count,
-				   fetch_samples[i][j].latency,
+				   data_samples[i][j].count,
+				   code_samples[i][j].latency,
 				   false);
 
-			op_samples[i][j].count = 0;
+			data_samples[i][j].count = 0;
 		}
-		op_samples_cnt[i] = 0;
+		data_samples_cnt[i] = 0;
 	}
 }
 
-void iprofiler_process_samples(int fd_fetch, int fd_op, u64 fetch_cnt,
-			       u64 op_cnt)
+void iprofiler_process_samples(int fd_code, int fd_data, u64 code_cnt,
+			       u64 data_cnt)
 {
-	u64 total_freq_fetch, total_freq_op;
+	u64 total_freq_code, total_freq_data;
 
 	/* No multiple instances of sampling and/or reporting */
 	if (atomic_cmxchg(&light_semaphore, 0, 1))
 		return;
 
-	if (fetch_cnt >= MIN_IBS_FETCH_SAMPLES) {
-		fetch_cnt = get_code_samples(fd_fetch,
-					     &total_freq_fetch,
-					     false);
-		process_code_samples(total_freq_fetch, true);
+	if (code_cnt >= MIN_CODE_SAMPLES) {
+		code_cnt = get_code_samples(fd_code, &total_freq_code, false);
+		process_code_samples(code_cnt, true);
 	}
 
-	if (op_cnt >= MIN_IBS_OP_SAMPLES) {
-		op_cnt = get_data_samples(fd_op,
-					  &total_freq_op,
-					  false);
-		process_data_samples(total_freq_op, true);
+	if (data_cnt >= MIN_DATA_SAMPLES) {
+		data_cnt = get_data_samples(fd_data, &total_freq_data, false);
+		process_data_samples(data_cnt, true);
 	}
 
 	assert(atomic_cmxchg(&light_semaphore, 1, 0) == 1);
@@ -581,6 +582,7 @@ static void report_profiler_information_code(bool summary)
 {
 	int i, j, pct;
 	char function[MAX_FUNC_NAME];
+	bool print_hdr = true;
 
 	printf("\f\r");
 
@@ -593,19 +595,22 @@ static void report_profiler_information_code(bool summary)
 			continue;
 		}
 
-		if (j++ == 0)
-			print_header(summary, true);
-
+		j++;
 		if (j > iprofiler) {
 			code_ref[i].ref = 0;
 			continue;
+		}
+
+		if (print_hdr) {
+			print_header(summary, true);
+			print_hdr = false;
 		}
 
 		if (code_ref[i].info) {
 			snprintf(function, MAX_FUNC_NAME, "%s",
 				 code_ref[i].info->name);
 		} else {
-			if (IBS_KERN_SAMPLE(code_ref[i].ip)) {
+			if (KERN_SAMPLE(code_ref[i].ip)) {
 				snprintf(function, MAX_FUNC_NAME,
 					"KERN:0x%lX",
 				 	(unsigned long)code_ref[i].ip);
@@ -616,15 +621,15 @@ static void report_profiler_information_code(bool summary)
 			}
 		}
 
-		assert(code_ref[i].ref <= code_samples);
-		pct = code_ref[i].ref * 100 / code_samples;
+		assert(code_ref[i].ref <= code_sample_count);
+		pct = code_ref[i].ref * 100 / code_sample_count;
 
 		printf("%-3d %-10u %-20s %-14p %-7lu %-7u %4s %5s ",
 			j, code_ref[i].pid, function,
 			(void *)(unsigned long)code_ref[i].ip,
 			(unsigned long)code_ref[i].ref,
 			pct, "CODE",
-			IBS_KERN_SAMPLE(code_ref[i].ip) ? "KERN" : "USER");
+			KERN_SAMPLE(code_ref[i].ip) ? "KERN" : "USER");
 
 
 		if (code_ref[i].latency_cnt < MIN_FOR_LATENCY) {
@@ -657,6 +662,7 @@ static void report_profiler_information_data(bool summary)
 {
 	int i, j, pct;
 	char function[MAX_FUNC_NAME];
+	bool print_hdr = true;
 
 
 	qsort(data_ref, next_data_ref, sizeof(struct code_ref), ref_cmp);
@@ -668,9 +674,13 @@ static void report_profiler_information_data(bool summary)
 			continue;
 		}
 
-		if (j++ == 0)
-			print_header(summary, false);
 
+		if (print_hdr) {
+			print_header(summary, false);
+			print_hdr = false;
+		}
+
+		j++;
 		if (j > iprofiler) {
 			data_ref[i].ref = 0;
 			continue;
@@ -680,7 +690,7 @@ static void report_profiler_information_data(bool summary)
 			snprintf(function, MAX_FUNC_NAME, "%s",
 				 data_ref[i].info->name);
 		} else {
-			if (IBS_KERN_SAMPLE(data_ref[i].ip)) {
+			if (KERN_SAMPLE(data_ref[i].ip)) {
 				snprintf(function, MAX_FUNC_NAME,
 					"KERN:0x%lX",
 				 	(unsigned long)data_ref[i].ip);
@@ -691,15 +701,15 @@ static void report_profiler_information_data(bool summary)
 			}
 		}
 
-		assert(data_ref[i].ref <= data_samples);
-		pct = data_ref[i].ref * 100 / data_samples;
+		assert(data_ref[i].ref <= data_sample_count);
+		pct = data_ref[i].ref * 100 / data_sample_count;
 
 		printf("%-3d %-10u %-20s %-14p %-7lu %-7u %4s %5s",
 			j, data_ref[i].pid, function,
 			(void *)(unsigned long)data_ref[i].key,
 			(unsigned long)data_ref[i].ref,
 			pct, "DATA",
-			IBS_KERN_SAMPLE(data_ref[i].ip) ? "KERN" : "USER");
+			KERN_SAMPLE(data_ref[i].ip) ? "KERN" : "USER");
 
 		if (data_ref[i].latency_cnt < MIN_FOR_LATENCY) {
 			printf("\n");
@@ -733,7 +743,7 @@ void iprofiler_report(bool summary)
 	if (atomic_cmxchg(&light_semaphore, 0, 1))
 		return;
 
-	if (!next_code_ref && !next_data_ref) {
+	if (!next_code_ref || !next_data_ref) {
 		assert(atomic_cmxchg(&light_semaphore, 1, 0) == 1);
 		return;
 	}
@@ -752,14 +762,14 @@ void iprofiler_report(bool summary)
 	report_profiler_information_data(summary);
 
 	printf("\nCode samples : %lu, Data samples : %lu\n",
-		(unsigned long)code_samples,
-		(unsigned long)data_samples);
+		(unsigned long)code_sample_count,
+		(unsigned long)data_sample_count);
 
 	next_code_ref     = 0;
 	next_data_ref     = 0;
 	next_process_info = 0;
-	data_samples      = 0;
-	code_samples      = 0;
+	data_sample_count = 0;
+	code_sample_count = 0;
 	start             = end;
 
 	tdestroy(root_code_ref, do_nothing);
@@ -781,23 +791,23 @@ int iprofiler_function(const char *kernobj, int freq, int msecs,
 	int err = -1;
 	struct bpf_object *obj = NULL;
 	struct bpf_program *prog[TOTAL_BPF_PROGRAMS];
-	struct bpf_link **fetch_links = NULL, **op_links = NULL;
+	struct bpf_link **code_links = NULL, **data_links = NULL;
 	struct bpf_link **lbr_links = NULL;
 	char filename[256];
 	int map_fd[TOTAL_MAPS];
-	unsigned long fetch_cnt, op_cnt;
-	unsigned long fetch_cnt_old, op_cnt_old;
-	unsigned long fetch_cnt_new, op_cnt_new;
+	unsigned long code_cnt, data_cnt;
+	unsigned long code_cnt_old, data_cnt_old;
+	unsigned long code_cnt_new, data_cnt_new;
 	struct timeval start;
 
-	fetch_links = calloc(nr_cpus, sizeof(*fetch_links));
-	if (!fetch_links) {
+	code_links = calloc(nr_cpus, sizeof(*code_links));
+	if (!code_links) {
 		fprintf(stderr, "ERROR: malloc of links\n");
 		goto cleanup;
 	}
 
-	op_links = calloc(nr_cpus, sizeof(*op_links));
-	if (!op_links) {
+	data_links = calloc(nr_cpus, sizeof(*data_links));
+	if (!data_links) {
 		fprintf(stderr, "ERROR: malloc of links\n");
 		goto cleanup;
 	}
@@ -808,7 +818,7 @@ int iprofiler_function(const char *kernobj, int freq, int msecs,
 		goto cleanup;
 	}
 
-	snprintf(filename, sizeof(filename), "%s/membalancer_kernel.o",
+	snprintf(filename, sizeof(filename), "%s/memory_profiler_kern.o",
 		 ebpf_object_dir);
 	obj = bpf_object__open_file(filename, NULL);
 	if (libbpf_get_error(obj)) {
@@ -882,42 +892,42 @@ int iprofiler_function(const char *kernobj, int freq, int msecs,
 
 	printf("\f");
 	printf("%s%s", BRIGHT, BMAGENTA);
-	printf("Collecting IBS %s samples .....\n",
+	printf("Collecting %s samples .....\n",
 		(l3miss) ? "MISS Filter" : "CLASSIC");
 	printf("%s", NORM);
 
-	fetch_cnt_old = 0;
-	fetch_cnt_new = 0;
-	op_cnt_old = 0;
-	op_cnt_new = 0;
+	code_cnt_old = 0;
+	code_cnt_new = 0;
+	data_cnt_old = 0;
+	data_cnt_new = 0;
 
 	gettimeofday(&start, NULL);
 
 	open_ibs_devices();
 	while (!err) {
-		assert(prog[IBS_DATA_SAMPLER]);
-		if (ibs_op_sampling_begin(freq, prog[IBS_DATA_SAMPLER],
-					op_links, cpusetp) != 0) {
+		assert(prog[DATA_SAMPLER]);
+		if (ibs_op_sampling_begin(freq, prog[DATA_SAMPLER],
+					data_links, cpusetp) != 0) {
 			if (l3miss)
 				fprintf(stderr,
-					"IBS OP L3 miss fitlering "
+					"DATA L3 miss fitlering "
 					"not supported\n");
 			else
 				fprintf(stderr,
-					"IBS OP sampling not supported\n");
+					"DATA sampling not supported\n");
 		}
 
-		assert(prog[IBS_CODE_SAMPLER]);
-		if (ibs_fetch_sampling_begin(freq, prog[IBS_CODE_SAMPLER],
-					     fetch_links, cpusetp) != 0) {
+		assert(prog[CODE_SAMPLER]);
+		if (ibs_fetch_sampling_begin(freq, prog[CODE_SAMPLER],
+					     code_links, cpusetp) != 0) {
 			if (l3miss)
 				fprintf(stderr,
-					"IBS Fetch L3 miss filtering "
+					"CODE L3 miss filtering "
 					"not supported\n");
 
 			else
 				fprintf(stderr,
-					"IBS Fetch sampling not supported\n");
+					"CODE sampling not supported\n");
 
 		}
 
@@ -929,35 +939,34 @@ int iprofiler_function(const char *kernobj, int freq, int msecs,
 		}
 
 		for (; ;)  {
-			fetch_cnt = peek_ibs_samples(map_fd[FETCH_COUNTER_MAP],
-						     fetch_cnt_old,
-						     &fetch_cnt_new);
+			code_cnt = peek_samples(map_fd[CODE_COUNTER_MAP],
+						 code_cnt_old, &code_cnt_new);
 
-			op_cnt = peek_ibs_samples(map_fd[OP_COUNTER_MAP],
-						  op_cnt_old, &op_cnt_new);
+			data_cnt = peek_samples(map_fd[DATA_COUNTER_MAP],
+					      data_cnt_old, &data_cnt_new);
 
-			if ((fetch_cnt >= MIN_IBS_SAMPLES)) {
-				fetch_cnt_old = fetch_cnt_new;
-				if (op_cnt >= MIN_IBS_OP_SAMPLES) {
-					op_cnt_old = op_cnt_new;
+			if ((code_cnt >= MIN_SAMPLES)) {
+				code_cnt_old = code_cnt_new;
+				if (data_cnt >= MIN_DATA_SAMPLES) {
+					data_cnt_old = data_cnt_new;
 					break;
 				}
 				break;
 			}
 
-			if ((op_cnt >= MIN_IBS_SAMPLES)) {
-				op_cnt_old = op_cnt_new;
-				if (fetch_cnt >= MIN_IBS_FETCH_SAMPLES) {
-					fetch_cnt_old = fetch_cnt_new;
+			if ((data_cnt >= MIN_SAMPLES)) {
+				data_cnt_old = data_cnt_new;
+				if (code_cnt >= MIN_CODE_SAMPLES) {
+					code_cnt_old = code_cnt_new;
 					break;
 				}
 				break;
 			}
 
-			if ((op_cnt >= 2 * MIN_IBS_SAMPLES) ||
-			    (fetch_cnt >= 2 * MIN_IBS_SAMPLES)) {
-				op_cnt_old    = op_cnt_new;
-				fetch_cnt_old = fetch_cnt_new;
+			if ((data_cnt >= 2 * MIN_SAMPLES) ||
+			    (code_cnt >= 2 * MIN_SAMPLES)) {
+				data_cnt_old    = data_cnt_new;
+				code_cnt_old = code_cnt_new;
 				break;
 			}
 
@@ -972,36 +981,38 @@ int iprofiler_function(const char *kernobj, int freq, int msecs,
 			 */
 		}
 
-		if (fetch_links)
-			ibs_sampling_end(fetch_links); /* IBS fetch */
+		if (code_links)
+			ibs_sampling_end(code_links); /* code */
 
-		if (op_links)
-			ibs_sampling_end(op_links);    /* IBS op */
+		if (data_links)
+			ibs_sampling_end(data_links);    /* dat */
 
-		iprofiler_process_samples(map_fd[IBS_FETCH_MAP],
-					 map_fd[IBS_OP_MAP], fetch_cnt, op_cnt);
+		iprofiler_process_samples(map_fd[CODE_MAP], map_fd[DATA_MAP],
+					 code_cnt, data_cnt);
 		iprofiler_report(false);
 
+#ifdef USE_CLOSE_RANGE
 		close_range(100, 8192, 0);
+#endif
 		usleep(msecs * 1000 / maximizer_mode);
 	}
 
 cleanup:
-	profiler_cleanup(map_fd[IBS_FETCH_MAP], map_fd[IBS_OP_MAP]);
+	profiler_cleanup(map_fd[CODE_MAP], map_fd[DATA_MAP]);
 	close_ibs_devices();
 	terminate_additional_bpf_programs();
 
-	if (fetch_links)
-		ibs_sampling_end(fetch_links); /* IBS fetch */
+	if (code_links)
+		ibs_sampling_end(code_links); /* code */
 
-	if (op_links)
-		ibs_sampling_end(op_links);    /* IBS op */
+	if (data_links)
+		ibs_sampling_end(data_links);    /* data */
 
 	if (lbr_links)
 		ibs_sampling_end(lbr_links);  /* LBR */
 
-	free(fetch_links);
-	free(op_links);
+	free(code_links);
+	free(data_links);
 	free(lbr_links);
 	bpf_object__close(obj);
 

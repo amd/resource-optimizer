@@ -50,9 +50,10 @@
 #include <sys/wait.h>
 #include <ctype.h>
 #include <search.h>
-
 #include <linux/close_range.h>
-#include "membalancer_common.h"
+#include "memory_profiler_arch.h"
+#include "memory_profiler_common.h"
+#include "thread_pool.h"
 #include "membalancer_utils.h"
 #include "membalancer_numa.h"
 #include "membalancer_utils.h"
@@ -156,22 +157,18 @@ static void print_hdr(void)
 
 static void lbr_profiler_report(int count, unsigned int total_samples)
 {
-	int i;
+	int i, j;
 	bool first = true;
 	char *from, *to;
 	char fromstr[50], tostr[35];
 
+	j = 0;
 	for (i = 0; i < count; i++) {
 		from = get_instruction(
 				(unsigned long)lbr_pbe_kv[i].key.from,
 				lbr_pbe_kv[i].key.tgid);
 		if (!from)
 			continue;
-
-		if (first) {
-			first = false;
-			print_hdr();
-		}
 
 		snprintf(fromstr, sizeof(fromstr), "%-#lx:%s",
 			 (unsigned long)lbr_pbe_kv[i].key.from, from);
@@ -182,11 +179,16 @@ static void lbr_profiler_report(int count, unsigned int total_samples)
 		if (!to)
 			continue;
 
+		if (first) {
+			first = false;
+			print_hdr();
+		}
+
 		snprintf(tostr, sizeof(tostr), "%-#lx:%s",
 			 (unsigned long)lbr_pbe_kv[i].key.to, to);
 
 		printf("%4u %6u %-50s %-35s %6u %6u%%\n",
-			i + 1,
+			++j,
 			(unsigned int)lbr_pbe_kv[i].key.tgid,
 			fromstr,
 			tostr,
@@ -239,7 +241,7 @@ static void lbr_profiler_process_samples_pbe(int fd)
 		total_samples +=  lbr_pbe_kv[count].val.ref;
 
 		if (user_space_only ||
-		     IBS_KERN_SAMPLE(lbr_pbe_kv[count].key.from)) {
+		    KERN_SAMPLE(lbr_pbe_kv[count].key.from)) {
 			count++;
 		}
 
@@ -283,8 +285,9 @@ int lbr_profiler_function(const char *kernobj, int freq, int msecs,
 		goto cleanup;
 	}
 
-	snprintf(filename, sizeof(filename), "%s/membalancer_kernel.o",
+	snprintf(filename, sizeof(filename), "%s/memory_profiler_kern.o",
 		 ebpf_object_dir);
+
 	obj = bpf_object__open_file(filename, NULL);
 	if (libbpf_get_error(obj)) {
 		fprintf(stderr, "ERROR: opening BPF object file failed\n");
@@ -363,7 +366,7 @@ int lbr_profiler_function(const char *kernobj, int freq, int msecs,
 		usleep(msecs * 1000);
 
 		if (lbr_links)
-			ibs_sampling_end(lbr_links); /* IBS fetch */
+			ibs_sampling_end(lbr_links);
 
 		lbr_profiler_process_samples(map_fd[LBR_PBE],
 					     map_fd[LBR_PBE_FLAGS]);
@@ -372,7 +375,9 @@ int lbr_profiler_function(const char *kernobj, int freq, int msecs,
 		 * TODO: Remove the workaround once the place where
 		 * the file descriptors are leaked are known.
 		 */
+#ifdef USE_CLOSE_RANGE
 		close_range(100, 8192, 0);
+#endif
 		usleep(msecs * 1000 / maximizer_mode);
 	}
 

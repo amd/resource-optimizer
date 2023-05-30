@@ -13,6 +13,8 @@
 
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ * LBR sampling : Architectural independent functions for branch records
  */
 #pragma once
 #include <linux/version.h>
@@ -23,10 +25,10 @@
 #include <bpf/bpf_helpers.h>
 #include <linux/perf_event.h>
 #include <bpf/bpf_helpers.h>
-#include <generic_kern_amd.h>
 #include <assert.h>
-#include "membalancer_common.h"
-#include "membalancer_pvt.h"
+#include "memory_profiler_arch.h"
+#include "memory_profiler_common.h"
+#include "memory_profiler_pvt.h"
 #include "lbr_common.h"
 
 struct {
@@ -105,13 +107,17 @@ int lbr_sampler(struct bpf_perf_event_data *ctx)
 
 	init_function();
 
-	err = amd_lbr_sampler(ctx, &src, &entries, &tgid);
+	tgid = bpf_get_current_pid_tgid();
+	if (!valid_pid(tgid >> 32))
+		return -EINVAL;
+
+	err = lbr_sample(ctx, &src, &entries);
 	if (err)
 		return err;
 
 	for (i = 0; i < MAX_LBR_ENTRIES; i++) {
 		if (i < entries) {
-			err = amd_lbr_sampler_entry(src, &dst);
+			err = lbr_entry(src, &dst);
 			if (err)
 				break;
 		} else {
