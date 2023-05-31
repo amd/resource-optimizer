@@ -1,6 +1,5 @@
 /*
- * membalancer_lib.h - Memory balancer library functions
- * and analyze the instruction and data (if available) samples.
+ * Rate limier : token bucket
  *
  * Copyright (c) 2015 The Libbpf Authors. All rights reserved.
  * Copyright (c) 2023 Advanced Micro Devices, Inc. All Rights Reserved.
@@ -28,21 +27,16 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef MEMBALANCER_LIB_H
-#define MEMBALANCER_LIB_H
-int get_ibs_device_type(const char *dev);
-void open_ibs_devices(void);
-void close_ibs_devices(void);
-int process_include_pids(struct bpf_object *obj, char *pid_string, bool ppid);
-int parse_cpulist(const char *cpu_list, cpu_set_t *cpusetp, size_t set_size);
-int perf_sampling_begin(int freq, struct bpf_program *prog,
-			struct bpf_link *links[], cpu_set_t *cpusetp);
-int ibs_fetch_sampling_begin(int freq, struct bpf_program *prog,
-			     struct bpf_link *links[], cpu_set_t *cpusetp);
-int lbr_sampling_begin(int freq, struct bpf_program *prog,
-		       struct bpf_link *links[], cpu_set_t *cpusetp);
-void ibs_sampling_end(struct bpf_link *links[]);
-int ibs_op_sampling_begin(int freq, struct bpf_program *prog,
-                          struct bpf_link *links[], cpu_set_t *cpusetp);
-int fill_cpu_nodes(struct bpf_object *obj);
+#ifndef RATE_LIMIT_H
+#define RATE_LIMIT_H
+
+struct rate_limiter;
+typedef struct rate_limiter rate_limiter_t;
+
+bool ratelimiter_grant(rate_limiter_t *rt,
+		unsigned int token_request);
+rate_limiter_t *
+ratelimiter_create(unsigned long bucket_capacity,
+		unsigned int refresh_rate);
+void ratelimiter_destroy(rate_limiter_t *rt);
 #endif

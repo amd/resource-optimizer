@@ -65,8 +65,8 @@ struct data_samples {
 #define migration_throttle_limit 10
 extern int idle_cpu_cnt[MAX_NUMA_NODES];
 extern int nr_cpus;
-extern threadpool_t tp;
 extern cpu_set_t *cpusetp;
+extern int verbose;
 
 struct cpu_utilinfo {
 	int cpu;
@@ -144,6 +144,8 @@ void print_bar(int numa, bool text,
 void print_text(u64 total_ref, u64 *numa_ref);
 unsigned long seconds_elapsed(struct timeval *start,
 			struct timeval *end);
+unsigned long milliseconds_elapsed(struct timeval *start,
+			struct timeval *end);
 int freemem_threshold(void);
 
 int init_generic_tier(void);
@@ -155,6 +157,8 @@ int get_code_samples(int fd, __u64 *total_freq, bool defer);
 void cleanup_code_samples(int fd);
 int get_data_samples(int fd, __u64 *total_freq, bool defer);
 void cleanup_data_samples(int fd);
+unsigned long get_bytecount(char unit, unsigned int size);
+
 extern int report_frequency;
 extern int iprofiler;
 

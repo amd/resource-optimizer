@@ -29,20 +29,20 @@ do
 		if [ ${frequency} -lt 0 ]
 		then
 			echo "The Sampling frequency is default"
-			./membalancer -f 25 -u -P ${parentPID} -v1 -m 0.0001 -M 1 -r 2 100 -H -S autotune
+			./membalancer -f 25 -u -P ${parentPID} -v1 -m 0.0001 -x 1 -r 2 100 -H -S autotune
 		else
 			echo "The Sampling frequency is ${frequency}"
-			./membalancer -f 25 -u -P ${parentPID} -v1 -m 0.0001 -M 1 -r 2 100 -H -S autotune ${frequency}
+			./membalancer -f 25 -u -P ${parentPID} -v1 -m 0.0001 -x 1 -r 2 100 -H -S autotune ${frequency}
 		fi
 	else
 		echo "The PID getting balanced : ${pid}"
 		if [ ${frequency} -lt 0 ]
 		then
 			echo "The Sampling frequency is default"
-			./membalancer -f 25 -u -p ${pid} -v1 -m 0.0001 -M 1 -r 2 100 -H -S autotune
+			./membalancer -f 25 -u -p ${pid} -v1 -m 0.0001 -x 1 -r 2 100 -H -S autotune
 		else
 			echo "The Sampling frequency ${frequency}"
-			./membalancer -f 25 -u -p ${pid} -v1 -m 0.0001 -M 1 -r 2 100 -H -S autotune ${frequency}
+			./membalancer -f 25 -u -p ${pid} -v1 -m 0.0001 -x 1 -r 2 100 -H -S autotune ${frequency}
 		fi
 	fi
 done

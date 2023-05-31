@@ -31,13 +31,13 @@
 
 #define MAX_REMOTE_REF 50
 
-struct ibs_noderef_sample {
+struct noderef_sample {
     short target_node;
     unsigned long pid;
     unsigned long max_ref;
 };
 
-extern struct ibs_noderef_sample numa_reference[MAX_PROCESS_STATS_IDX];
+extern struct noderef_sample numa_reference[MAX_PROCESS_STATS_IDX];
 int move_process(u32 max_count, bool sort);
 
 #endif

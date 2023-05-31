@@ -19,9 +19,9 @@ do
 	if [ $parentPID ]
 	then
 		echo "The parent PID getting profiled : ${parentPID}"
-		./membalancer -f 25 -u -P ${parentPID} -v1 -m 0.0001 -M 1 -r 2 100 -H -S process
+		./membalancer -f 25 -u -P ${parentPID} -v1 -m 0.0001 -x 1 -r 2 100 -H -S process
 	else
 		echo "The PID getting profiled : ${pid}"
-		./membalancer -f 25 -u -p ${pid} -v1 -m 0.0001 -M 1 -r 2 100 -H -S process
+		./membalancer -f 25 -u -p ${pid} -v1 -m 0.0001 -x 1 -r 2 100 -H -S process
 	fi
 done

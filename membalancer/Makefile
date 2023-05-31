@@ -15,6 +15,7 @@ BIN_MIGRATE := ${MODULE}_migrate.o
 MEMSTATS_USER := memstats_user.o
 HEAP_USER := heap_user.o
 TPOOL := thread_pool.o
+RATE_LIMITER := rate_limiter.o
 PROCESS_STATS := processtats_user.o
 GETPADDR:= getpaddr.o
 LIBS  := ${LIBBPF}/src/libbpf.so -lz -lelf -lnuma -lpthread -lrt
@@ -34,7 +35,8 @@ USR_INCLUDE := -I. \
 
 all:   ${BIN_TRACER} ${BIN_NUMA} ${BIN_UTILS} ${BIN_TIER} \
 	${HEAP_USER} ${BIN_MIGRATE} ${GETPADDR} ${TPOOL} \
-	${MEMSTATS_USER} ${LIB} ${PROCESS_STATS} ${BIN_USER}
+	${MEMSTATS_USER} ${LIB} ${PROCESS_STATS} ${RATE_LIMITER} \
+	${BIN_USER}
 
 getpaddr.o: getpaddr.c
 	$(CLANG) -c $<  ${USR_INCLUDE}
@@ -55,6 +57,8 @@ heap_user.o: heap_user.c
 	$(CLANG) -c $<  ${USR_INCLUDE} ${CPU_TYPE}
 thread_pool.o: thread_pool.c
 	$(CLANG) -c $<  ${USR_INCLUDE} -mcmodel=large ${CPU_TYPE}
+rate_limiter.o: rate_limiter.c
+	$(CLANG) -c $<  ${USR_INCLUDE} -mcmodel=large ${CPU_TYPE}
 %_lib.o: %_lib.c
 	$(CLANG) -c $<  ${USR_INCLUDE} -mcmodel=large ${CPU_TYPE}
 processtats_user.o: processtats_user.c
@@ -70,6 +74,7 @@ processtats_user.o: processtats_user.c
 	./heap_user.o \
 	./getpaddr.o \
 	./thread_pool.o \
+	./rate_limiter.o \
 	./membalancer_lib.o \
 	./processtats_user.o \
 	$<  ${USR_INCLUDE} -o ${MODULE} \

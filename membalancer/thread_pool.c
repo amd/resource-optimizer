@@ -1,6 +1,6 @@
 /*
  *
- * thread_pool.x thread management for membalancer tool
+ * thread_pool.c - thread management for membalancer tool
  *
  * Copyright (c) 2015 The Libbpf Authors. All rights reserved.
  * Copyright (c) 2023 Advanced Micro Devices, Inc. All Rights Reserved.
@@ -45,15 +45,25 @@ static void workqueue_init(struct clist_head *head);
 static void workqueue_destroy(struct clist_head *head);
 static work_t * workqueue_pull(struct clist_head *head);
 
-int threadpool_create(threadpool_t *tp, int num_threads)
+threadpool_t *
+threadpool_create(int num_threads)
 {
 	int i;
 	int err;
+	threadpool_t *tp;
+
+	tp = (threadpool_t *) malloc(sizeof(threadpool_t));
+	if (tp == NULL) {
+		printf("Failed to create threadpool \n");
+		return NULL;
+	}
+	memset(tp, 0, sizeof(*tp));
 
 	tp->pool = (thread_t *) malloc(num_threads * sizeof(thread_t));
 	if(tp->pool == NULL) {
 		printf("Failed to create threadpool \n");
-		return -ENOMEM;
+		free(tp);
+		return NULL;
 	}
 
 	tp->stop = false;
@@ -67,12 +77,15 @@ int threadpool_create(threadpool_t *tp, int num_threads)
 	for (i = 0; i < num_threads; i++) {
 		tp->pool[i].id = i;
 		err = pthread_create(&tp->pool[i].pthread, NULL, run, tp);
-		if (err)
-			return -err;
+		if (err) {
+			printf("Failed to create threads \n");
+			threadpool_destroy(tp);
+			return NULL;
+		}
 		assert(tp->pool[i].pthread);
 		pthread_detach(tp->pool[i].pthread);
 	}
-	return 0;
+	return tp;
 }
 
 static void *run(void *arg)
@@ -132,7 +145,7 @@ void threadpool_destroy(threadpool_t *tp)
 	pthread_cond_destroy(&tp->work_cond);
 	pthread_cond_destroy(&tp->working_cond);
 	free(tp->pool);
-	tp->pool = NULL;
+	free(tp);
 }
 
 static void threadpool_wait(threadpool_t *tp)

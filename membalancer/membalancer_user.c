@@ -66,20 +66,20 @@
 #include "heap_user.h"
 #include "membalancer_user.h"
 #include "membalancer_lib.h"
+#include "rate_limiter.h"
 
 #define MEMB_CLOCK 25
 #define MEMB_INTVL 100
 #define MIN_MIGRATED_PAGES 	1024
 #define MIN_MIGRATED_PAGES_TIER 4096
 
-
-threadpool_t threadpool;
+threadpool_t *threadpool;
+rate_limiter_t *ratelimiter;
 int nr_cpus;
 static double min_pct = 0.01;
 static bool user_space_only = false;
 int verbose = 2;
 int timer_clock = 1;
-
 bool do_migration = false;
 enum tuning_mode tuning_mode = MEMORY_MOVE;
 static unsigned int cpu_nodes;
@@ -99,7 +99,7 @@ static int min_migrated_pages = MIN_MIGRATED_PAGES;
 #define OP_CONFIG_L3MISS    16
 
 static unsigned int cpu_nodes;
-static char cmd_args[] = "c:f:F:P:p:r:m:M:n:o:v:U:T:t:D:L:B:uhcbHVlS::";
+static char cmd_args[] = "c:f:F:P:p:r:m:x:n:o:v:U:t:g:D:L:B:R:K:M:G:T:uhcbHVlS::";
 
 static u32 sampling_interval_cnt = 100;
 static u32 sampling_iter;
@@ -118,6 +118,8 @@ atomic64_t status_code_cnt, status_data_cnt, status_pages_migrated;
 #define MAX_PAGES_PER_CALL 65536
 #define PAGE_MOVERS 2
 #define SAMPLER_WORKERS 1
+#define REFRESH_RATE PAGES_PER_CALL
+
 /*
  * Extra two threads for update_node_loadavg and
  * update_per_node_freemem functions.
@@ -149,7 +151,7 @@ static void usage(const char *cmd)
 {
 	printf("USAGE: %s [-f freq] [-p <pid,..>] [-P <parent pid,..>] "
 			"[-u] [-h] [-H] [-V] [-l] [-M]"
-			"[-T <numa tier information> ] [-b]"
+			"[-t <numa tier information> ] [-b]"
 			"[-{autotune, memory, process} <sampling count>]"
 			"[-m <percentage>] "
 			"[-v <verbose>] [-U <Upgrade size in bytes] "
@@ -157,6 +159,8 @@ static void usage(const char *cmd)
 			"[duration]\n", cmd);
 	printf("       -f <freq>    # sample frequency (Hertz), default %d Hz\n",
 			MEMB_CLOCK);
+	printf("       -R Ratelimiter refresh rate <num pages>\n");
+	printf("       -K,M,G,T bandwidth in KB,MB,GB,TB\n");
 	printf("       -p <pid> Process ID to be tracked\n");
 	printf("       -P <pid> Parent Process ID to be tracked\n");
 	printf("       -c list of cpus to collect samples on <comma separated"
@@ -170,9 +174,9 @@ static void usage(const char *cmd)
 	printf("       -m Minimum percentage of samples to be considered\n"
 			"          for processing hot pages, default %4.2lf\n",
 			min_pct);
-	printf("       -M Maximizer mode to increase "
+	printf("       -x Maximizer mode to increase "
 			"the frequency of samples' collection\n");
-	printf("        -T <tier information> where\n"
+	printf("        -t <tier information> where\n"
 			"         the teir information defines two or more "
 			"tiers with a tuple for \n"
 			"         each tier\n\n"
@@ -192,35 +196,35 @@ static void usage(const char *cmd)
 
 	printf("\nExamples\n\n");
 	printf("1. Example for a 3-tier memory configuration\n");
-	printf("%s -f 25 -u -P 1234 -v1 -m 0.0001 -M 1 -r 2 100 -b\n"
-	      "-T 0:0:0:0:0:1:1:0-1:1:1:0:0:1:2:0-2:2,3:5:1:0:0:0:0\n"
+	printf("%s -f 25 -u -P 1234 -v1 -m 0.0001 -x 1 -r 2 100 -b\n"
+	      "-t 0:0:0:0:0:1:1:0-1:1:1:0:0:1:2:0-2:2,3:5:1:0:0:0:0\n"
 	      "-H -U 1048576 -D 1048576\n", cmd);
 	printf("Where the tiers 0, 1 and 2 contain "
 		"the nodes {0}, {1}, {2, 3} respectively.\n");
 	printf("\n");
 	printf("2. Example for NUMA balancer configuration:\n");
-	printf("%s -f 25 -u -P 1234 -v1 -m 0.0001 -M 1 -r 2 100 -S memory -b\n"
+	printf("%s -f 25 -u -P 1234 -v1 -m 0.0001 -x 1 -r 2 100 -S memory -b\n"
 	       "-H -U 1048576 -D 1048576\n", cmd);
 	printf("\n");
 	printf("3. Example for memory access pattern\n");
-	printf("%s -f 25 -u -P 1234 -v1 -m 0.0001 -M 1 -r 2 100 -S memory\n",
+	printf("%s -f 25 -u -P 1234 -v1 -m 0.0001 -x 1 -r 2 100 -S memory\n",
 	       cmd);
 	printf("\n");
 	printf("4. Example for Process migration configuration:\n");
-	printf("%s -f 25 -u -P 1234 -v1 -m 0.0001 -M 1 -r 2 1000 "
+	printf("%s -f 25 -u -P 1234 -v1 -m 0.0001 -x 1 -r 2 1000 "
 	       "-H -S process -b\n", cmd);
 	printf("\n");
 	printf("5. Example for Process cpu and memory access pattern\n");
-	printf("%s -f 25 -u -P 1234 -v1 -m 0.0001 -M 1 -r 2 1000"
+	printf("%s -f 25 -u -P 1234 -v1 -m 0.0001 -x 1 -r 2 1000"
 	       "-H -S process\n", cmd);
 	printf("\n");
 	printf("6. Example for Auto-tuning configuration:\n");
-	printf("%s -f 25 -u -P 1234 -v1 -m 0.0001 -M 1 -r 2 1000 -H\n"
+	printf("%s -f 25 -u -P 1234 -v1 -m 0.0001 -x 1 -r 2 1000 -H\n"
 	       "-S autotune 200\n"
 	       "default sampling count %u\n", cmd, sampling_interval_cnt);
 	printf("\n");
 	printf("7. Example for memory access tracer or pattern analyzer\n");
-	printf("%s -f 25 -u -P 99053 -v1 -m 0.0001 -M 1 -r 2 1000 -L /tmp/ \n",
+	printf("%s -f 25 -u -P 99053 -v1 -m 0.0001 -x 1 -r 2 1000 -L /tmp/ \n",
 	       cmd);
 	printf("8. Example for list of cpus\n");
 	printf("%s -u -P 99053 -c 1,2,3,10-20,30-40\n",cmd);
@@ -249,6 +253,22 @@ static int get_balancing_mode(char *mode_str)
 	return -1;
 }
 
+static unsigned long
+get_capacity(char unit, unsigned int bandwidth)
+{
+	static int config;
+	unsigned long long bytes;
+
+	if (config++ > 1) {
+		printf("Only one out of {K,M,G,T} should be used\n");
+		return 0;
+	}
+
+	bytes = get_bytecount(unit, bandwidth);
+
+	return bytes / PAGE_SIZE;
+}
+
 int freemem_threshold(void)
 {
 	return min_freemem_pct;
@@ -266,9 +286,13 @@ static void page_mover_enqueue(struct page_list *page)
 {
 	int err;
 
-	err = threadpool_add_work(&threadpool, page_move_function, page);
-	if (err)
-		printf("Failed to add work to threadpool, error %d\n", err);
+	if (ratelimiter_grant(ratelimiter, PAGES_PER_CALL)) {
+		err = threadpool_add_work(threadpool, page_move_function, page);
+		if (err)
+			printf("Failed to add work to threadpool, error %d\n", err);
+	} else {
+		free(page);
+	}
 }
 
 static void page_mover_parallel_enqueue(struct page_list *list,
@@ -948,7 +972,7 @@ static void process_samples(unsigned long codecnt, unsigned long datacnt)
 	if (!pending_samples())
 		return;
 
-	err = threadpool_add_work(&threadpool, sampler_worker_function,
+	err = threadpool_add_work(threadpool, sampler_worker_function,
 				  &worker);
 	if (err)
 		printf("Failed to add work to threadpool, error %d\n", err);
@@ -1301,9 +1325,11 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 		(l3miss) ? "MISS Filter" : "CLASSIC");
 	printf("%s", NORM);
 
-	err = threadpool_create(&threadpool, THREAD_COUNT);
-	if (err)
+	threadpool = threadpool_create(THREAD_COUNT);
+	if (threadpool == NULL) {
+		err = -ENOMEM;
 		goto cleanup;
+	}
 
 	init_sampler_worker(map_fd, msecs);
 
@@ -1438,12 +1464,12 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 			goto cleanup;
 
 		if (do_migration && !(tuning_mode & MEMORY_MOVE)) {
-			err = threadpool_add_work(&threadpool,
+			err = threadpool_add_work(threadpool,
 						  update_node_loadavg, NULL);
 			if (err)
 				goto cleanup;
 		}
-		err = threadpool_add_work(&threadpool,
+		err = threadpool_add_work(threadpool,
 					   update_per_node_freemem, NULL);
 		if (err)
 			goto cleanup;
@@ -1466,7 +1492,7 @@ cleanup:
 	free(code_links);
 	free(data_links);
 	bpf_object__close(obj);
-	threadpool_destroy(&threadpool);
+	threadpool_destroy(threadpool);
 
 	return err;
 }
@@ -1546,6 +1572,8 @@ int main(int argc, char **argv)
 	char *include_cpus = NULL;
 	char buffer[256];
 	size_t size;
+	unsigned int refresh_rate = REFRESH_RATE;
+	unsigned long capacity;
 
 	nr_cpus = sysconf(_SC_NPROCESSORS_CONF);
 
@@ -1572,7 +1600,7 @@ int main(int argc, char **argv)
 		case 'V':
 			tracer_physical_mode = false;
 			break;
-		case 'T':
+		case 't':
 			min_migrated_pages = MIN_MIGRATED_PAGES_TIER;
 			tier_args = optarg;
 			set_tier_mode();
@@ -1586,7 +1614,7 @@ int main(int argc, char **argv)
 		case 'm':
 			min_pct = atof(optarg);
 			break;
-		case 't':
+		case 'g':
 			migration_timeout_sec = atoi(optarg);
 			break;
 		case 'r':
@@ -1594,7 +1622,7 @@ int main(int argc, char **argv)
 			if (report_frequency < 1)
 				report_frequency = 1;
 			break;
-		case 'M':
+		case 'x':
 			maximizer_mode = atof(optarg);
 			if (maximizer_mode < 0.01)
 				maximizer_mode = 0.01;
@@ -1689,6 +1717,20 @@ int main(int argc, char **argv)
 		case 'i':
 			timer_clock = atoi(optarg);
 			break;
+		case 'R':
+			refresh_rate = (unsigned int)strtoul(optarg, NULL, 10);
+			break;
+		case 'K':
+		case 'M':
+		case 'G':
+		case 'T':
+			capacity = get_capacity(opt,
+						(unsigned int)strtoul(optarg, NULL, 10));
+			if (capacity <= 0) {
+				usage(argv[0]);
+				return -1;
+			}
+			break;
 		default:
 			usage(argv[0]);
 			return -1;
@@ -1737,19 +1779,27 @@ int main(int argc, char **argv)
 		err = parse_cpulist(include_cpus, cpusetp, size);
 		if (err) {
 			usage(argv[0]);
-			CPU_FREE(cpusetp);
-			return err;
+			goto cleanup;
 		}
 	}
 
 	open_ibs_devices();
+
+	ratelimiter = ratelimiter_create(capacity, refresh_rate);
+	if (ratelimiter == NULL) {
+		err = -ENOMEM;
+		goto cleanup;
+	}
 
 	do {
 		err = balancer_function(argv[0], freq, msecs,
 					include_pids, include_ppids, cpusetp);
 	}  while(err == ETIMEDOUT);
 
-	CPU_FREE(cpusetp);
+cleanup:
+	if (cpusetp)
+		CPU_FREE(cpusetp);
+	ratelimiter_destroy(ratelimiter);
 
 	return err;
 }

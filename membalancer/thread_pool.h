@@ -1,5 +1,5 @@
 /*
- * thread_pool.h thread management for membalancer tool
+ * thread_pool.h - thread management for membalancer tool
  *
  * Copyright (c) 2015 The Libbpf Authors. All rights reserved.
  * Copyright (c) 2023 Advanced Micro Devices, Inc. All Rights Reserved.
@@ -56,7 +56,8 @@ typedef struct theadpool
 	bool				stop;
 } threadpool_t;
 
-int threadpool_create(threadpool_t *tp, int num_threads);
+threadpool_t *
+threadpool_create(int num_threads);
 int threadpool_add_work(threadpool_t *tp,
 		void (*function_p)(void *), void *arg_p);
 void threadpool_destroy(threadpool_t *tp);

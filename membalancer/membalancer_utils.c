@@ -51,6 +51,11 @@
 #define VENDOR_ID_LEN 12  /* cpu vendor id length in bytes */
 #define REG_COUNT 3   /* number of registers to read cpu vendor id */
 
+#define KB 1024ul
+#define MB (1024ul * KB)
+#define GB (1024ul * MB)
+#define TB (1024ul * GB)
+
 enum {
 	VENDOR_AMD,
     /*  VENDOR_INTEL, */
@@ -428,4 +433,39 @@ int get_next_idle_cpu(int node)
 
 	return fetched_cpu;
 }
+
 #endif
+
+unsigned long get_bytecount(char unit, unsigned int size)
+{
+	unsigned long scale = 0;
+
+	switch (unit) {
+	case 'K':
+		scale = KB;
+		break;
+	case 'M':
+		scale =  MB;
+		break;
+	case 'G':
+		scale = GB;
+		break;
+	case 'T':
+		scale = TB;
+		break;
+	default :
+		break;
+	}
+	return scale * (unsigned long) size;
+}
+
+unsigned long milliseconds_elapsed(struct timeval *start,
+		struct timeval *end)
+{
+    unsigned long milliseconds;
+
+    milliseconds = (end->tv_sec - start->tv_sec) * 1000UL;
+    milliseconds += (end->tv_usec - start->tv_usec) / 1000;
+
+    return milliseconds;
+}

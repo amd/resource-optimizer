@@ -22,17 +22,17 @@ do
 		echo "The parent PID getting profiled : ${parentPID}"
 		if [ "${zenver:-0}" == 4 ]
 		then
-			./membalancer -f 25 -u -P ${parentPID} -v1 -m 0.0001 -M 1 -r 2 100 -H -S memory -l
+			./membalancer -f 25 -u -P ${parentPID} -v1 -m 0.0001 -x 1 -r 2 100 -H -S memory -l
 		else
-			./membalancer -f 25 -u -P ${parentPID} -v1 -m 0.0001 -M 1 -r 2 100 -H -S memory
+			./membalancer -f 25 -u -P ${parentPID} -v1 -m 0.0001 -x 1 -r 2 100 -H -S memory
 		fi
 	else
 		echo "The PID getting profiled : ${pid}"
 		if [ "${zenver:-0}" == 4 ]
 		then
-			./membalancer -f 25 -u -p ${pid} -v1 -m 0.0001 -M 1 -r 2 100 -H -S memory -l
+			./membalancer -f 25 -u -p ${pid} -v1 -m 0.0001 -x 1 -r 2 100 -H -S memory -l
 		else
-			./membalancer -f 25 -u -p ${pid} -v1 -m 0.0001 -M 1 -r 2 100 -H -S memory
+			./membalancer -f 25 -u -p ${pid} -v1 -m 0.0001 -x 1 -r 2 100 -H -S memory
 		fi
 	fi
 done

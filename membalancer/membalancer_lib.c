@@ -553,13 +553,3 @@ int fill_cpu_nodes(struct bpf_object *obj)
 
 	return node;
 }
-
-unsigned long milliseconds_elapsed(struct timeval *start, struct timeval *end)
-{
-	unsigned long milliseconds;
-
-	milliseconds = (end->tv_sec - start->tv_sec) * 1000UL;
-	milliseconds += (end->tv_usec - start->tv_usec) / 1000;
-
-	return milliseconds;
-}

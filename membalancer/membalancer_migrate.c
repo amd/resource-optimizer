@@ -43,7 +43,7 @@
 
 cpu_set_t node_cpumask[MAX_NUMA_NODES];
 
-struct  ibs_noderef_sample numa_reference[MAX_PROCESS_STATS_IDX];
+struct noderef_sample numa_reference[MAX_PROCESS_STATS_IDX];
 
 static inline bool node_busy(int node)
 {
@@ -105,7 +105,7 @@ static inline bool get_migrate_token(int target_node, int *target_cpu)
 
 static int data_cmp(const void *p1, const void *p2)
 {
-	const struct ibs_noderef_sample  *s1 = p1, *s2 = p2;
+	const struct noderef_sample  *s1 = p1, *s2 = p2;
 
 	return s1->max_ref - s2->max_ref;
 }
@@ -167,11 +167,11 @@ int move_process(u32 max_count, bool sort)
 
 	if (sort)
 		qsort(numa_reference, max_count,
-				sizeof(struct ibs_noderef_sample), data_cmp);
+			sizeof(struct noderef_sample), data_cmp);
 
 	for (i = max_count - 1 ; i >= 0; i--) {
-	    pid = numa_reference[i].pid;
-	    target_node = numa_reference[i].target_node;
+		pid = numa_reference[i].pid;
+		target_node = numa_reference[i].target_node;
 		/*
 		 * Check the load average of the node and
 		 * migrate only if we find a non busy node,
