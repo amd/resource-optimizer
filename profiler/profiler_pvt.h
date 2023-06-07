@@ -32,10 +32,11 @@
 #define _PROFILER_PVT_H
 int iprofiler_function(const char *kernobj, int freq, int msecs,
 		       char *include_pids, char *include_ppids,
-		       cpu_set_t *cpusetp);
+		       cpu_set_t *cpusetp, char *filter_str);
+
 int lbr_profiler_function(const char *kernobj, int freq, int msecs,
 			  char *include_pids, char *include_ppids,
-			  cpu_set_t *cpusetp);
+			  cpu_set_t *cpusetp, char *filter_str);
 
 int init_and_load_bpf_programs(struct bpf_program **prog, int *map_fd,
 			       struct bpf_object *obj, char **program_names,
@@ -48,6 +49,12 @@ int terminate_additional_bpf_programs(void);
 void profiler_cleanup(int fetch_fd, int op_fd);
 unsigned long peek_samples(int fd, unsigned long old, unsigned long *new);
 
+struct profiler_filter;
+int profiler_parse_filter(char *str, struct profiler_filter *filter,
+			  const int max_entries);
+
+int profiler_fill_filter(struct bpf_object *obj, struct profiler_filter *filter,
+			 int max_entries);
 extern char * ebpf_object_dir;
 extern unsigned int cpu_nodes;
 extern bool user_space_only;

@@ -12,6 +12,7 @@ TRACER := membalancer_tracer.o
 MIGRATE := membalancer_migrate.o
 IPROFILER := iprofiler.o
 LBR_PROFILER := lbr_profiler.o
+PROFILER_MISC := profiler_misc.o
 BIN_UTILS := membalancer_utils.o
 MEMSTATS_USER := memstats_user.o
 HEAP_USER := heap_user.o
@@ -32,8 +33,8 @@ USR_INCLUDE := -I. \
 	-I../include/ \
 
 all:   ${LIB} ${BIN_UTILS} ${NUMA} ${HEAP_USER} ${GETPADDR} ${MIGRATE} \
-       ${TIER} ${TRACER} ${MEMSTATS_USER} ${LBR_PROFILER} ${IPROFILER} \
-       ${BIN_USER}
+       ${TIER} ${TRACER} ${MEMSTATS_USER} ${PROFILER_MISC} \
+       ${LBR_PROFILER} ${IPROFILER} ${BIN_USER}
 
 getpaddr.o: ../membalancer/getpaddr.c
 	$(CLANG) -c $<  ${USR_INCLUDE}
@@ -57,6 +58,8 @@ iprofiler.o: iprofiler.c
 	$(CLANG) -c $<  ${USR_INCLUDE} -mcmodel=large ${CPU_TYPE}
 lbr_profiler.o: lbr_profiler.c
 	$(CLANG) -c $<  ${USR_INCLUDE} -mcmodel=large ${CPU_TYPE}
+profiler_misc.o: profiler_misc.c
+	$(CLANG) -c $<  ${USR_INCLUDE} -mcmodel=large ${CPU_TYPE}
 
 %_user.o: %_user.c
 	$(CLANG) \
@@ -70,9 +73,10 @@ lbr_profiler.o: lbr_profiler.c
 	./heap_user.o \
 	./iprofiler.o \
 	./lbr_profiler.o \
+	./profiler_misc.o \
 	./membalancer_lib.o \
 	${CPU_TYPE} \
 	$<  ${USR_INCLUDE} -o ${MODULE} \
-	${LIBS} ${DEFS} -Wall -mcmodel=large
+	${LIBS} ${DEFS} -Wall -mcmodel=large 
 clean:
 	rm -f *.o ${MODULE}.o ${MODULE}

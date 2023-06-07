@@ -89,7 +89,7 @@ static float maximizer_mode = 0.2;
 int report_frequency = 1;
 static char *trace_dir;
 bool tracer_physical_mode = true;
-unsigned int min_samples = MIN_CLASSIC_SAMPLES;
+unsigned int min_samples;
 static int migration_timeout_sec = 60;
 static int min_migrated_pages = MIN_MIGRATED_PAGES;
 
@@ -99,7 +99,7 @@ static int min_migrated_pages = MIN_MIGRATED_PAGES;
 #define OP_CONFIG_L3MISS    16
 
 static unsigned int cpu_nodes;
-static char cmd_args[] = "c:f:F:P:p:r:m:M:o:v:U:T:t:D:L:B:uhcbHVlS::";
+static char cmd_args[] = "c:f:F:P:p:r:m:M:n:o:v:U:T:t:D:L:B:uhcbHVlS::";
 
 static u32 sampling_interval_cnt = 100;
 static u32 sampling_iter;
@@ -165,6 +165,7 @@ static void usage(const char *cmd)
 	printf("       -h help, displays this information\n");
 	printf("       -H show histograms\n");
 	printf("       -V <level>, Verbose level\n");
+	printf("       -n <sample count>, Minimum samples to start processing\n");
 	printf("       -l Collects only l3miss IBS samples\n");
 	printf("       -m Minimum percentage of samples to be considered\n"
 			"          for processing hot pages, default %4.2lf\n",
@@ -255,6 +256,9 @@ int freemem_threshold(void)
 
 static void ibs_fetchop_config_set(void)
 {
+	if (min_samples != 0)
+		return;
+
 	min_samples  = (l3miss) ? MIN_L3MISS_SAMPLES : MIN_CLASSIC_SAMPLES;
 }
 
@@ -1589,7 +1593,6 @@ int main(int argc, char **argv)
 			report_frequency = atoi(optarg);
 			if (report_frequency < 1)
 				report_frequency = 1;
-			
 			break;
 		case 'M':
 			maximizer_mode = atof(optarg);
@@ -1597,6 +1600,9 @@ int main(int argc, char **argv)
 				maximizer_mode = 0.01;
 			else if (maximizer_mode > 10)
 				maximizer_mode = 10;
+			break;
+		case 'n':
+			min_samples = atoi(optarg);
 			break;
 		case 'f':
 			freq = atoi(optarg);

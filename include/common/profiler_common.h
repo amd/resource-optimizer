@@ -18,29 +18,14 @@
  * data (if available) samples.
  */
 
-#ifndef _MEMORY_PROFILER__PVT_H_
-#define _MEMORY_PROFILER__PVT_H_
-unsigned long my_page_size;
-struct value_latency * get_value_latency(void);
-struct process_stats * alloc_process_stats(void);
-struct data_sample * alloc_data_sample(void);
-struct code_sample * alloc_code_sample(void);
-static void init_function(void);
-int amd_lbr_sampler(struct bpf_perf_event_data *ctx,
-		    struct perf_branch_entry **firstentryout,
-		    int *entries, u64 *tgidout);
-int amd_lbr_sampler_entry(struct perf_branch_entry *src,
-			  struct perf_branch_entry *dst);
+#ifndef _PROFILER_COMMON_H_
+#define _PROFILER_COMMON_H_
 
-int memstats_code_sampler_function(
-		struct bpf_perf_event_data *ctx,
-		bool filter);
+struct profiler_filter {
+	u64 addr_begin;
+	u64 addr_end;
+};
 
-int memstats_data_sampler_function(
-		struct bpf_perf_event_data *ctx,
-		bool filter);
-
-static void init_profiler(void);
-static bool profiler_valid_addr(u64 addr);
+#define MAX_PROFILER_FILTERS 8
 
 #endif

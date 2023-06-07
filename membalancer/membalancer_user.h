@@ -75,8 +75,8 @@ enum bpf_programs {
 };
 
 static char * profiler_program_names[TOTAL_BPF_PROGRAMS] = {
-	"memstats_code_sampler",
-	"memstats_data_sampler",
+	"profiler_code_sampler",
+	"profiler_data_sampler",
 	NULL,
 	NULL,
 };

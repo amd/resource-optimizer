@@ -69,8 +69,8 @@
 #include "membalancer_lib.h"
 #include "profiler_pvt.h"
 
-#define MEMB_CLOCK 25
-#define MEMB_INTVL 100
+#define PROFILER_CLOCK 25
+#define PROFILER_INTVL 100
 #define MIN_MIGRATED_PAGES 	1024
 #define MIN_MIGRATED_PAGES_TIER 4096
 
@@ -96,7 +96,7 @@ int report_frequency = 1;
 unsigned int min_ibs_samples = MIN_CLASSIC_SAMPLES;
 int timer_clock = 1;
 
-static char cmd_args[]  = "c:f:P:p:r:M:o:v:t:D:L:B:I:L:uhcbVlS::";
+static char cmd_args[]  = "c:f:F:P:p:r:M:o:v:L:B:I:L:tuhcVl::";
 
 char * ebpf_object_dir = "../bin/";
 atomic64_t status_code_cnt, status_data_cnt;
@@ -115,7 +115,10 @@ static void usage(const char *cmd)
 			"[-D <Downgrade size in bytes] "
 			"[duration]\n", cmd);
 	printf("       -f <freq>   # sample frequency (Hertz), default %d Hz\n",
-			MEMB_CLOCK);
+			PROFILER_CLOCK);
+	printf("       -F <hex_addr_start-hex-addr-end[,"
+			"<hex_addr_start-hex-addr-end]>\n");
+	printf("          For filtered samples\n");
 	printf("       -p <pid> Process ID to be tracked\n");
 	printf("       -P <pid> Parent Process ID to be tracked\n");
 	printf("       -c list of cpus to collect samples on <comma separated"
@@ -129,7 +132,7 @@ static void usage(const char *cmd)
 	printf("       -o <eBPF kernel module location, default is ");
 	printf("../kern/common\n");
 	printf("       <duration> Interval in milliseconds, "
-	       "default %d\n", MEMB_INTVL);
+	       "default %d\n", PROFILER_INTVL);
 
 	printf("\nExamples\n");
 	printf("Example 1: For instructiona and data profiling ...\n");
@@ -138,6 +141,10 @@ static void usage(const char *cmd)
 	printf("\nExample 2: For last branch record (LBR) ...\n");
 	printf("%s -f 25 -u  -v4 -M 1 -r 2 5000  -L5 -r2 [P|p pid[,pid2]\n",
 		cmd);
+	printf("\nExample 3: For last branch record (LBR) wth filter...\n");
+	printf("%s -f 25 -u  -v4 -M 1 -r 2 5000  -L5 -r2 [P|p pid[,pid2] ",
+		cmd);
+	printf("-F 0xaaaa-0xbbbb:0xcccc-0xdddd:0xeeee-0xfffff\n");
 	printf("\n");
 }
 
@@ -325,13 +332,14 @@ int main(int argc, char **argv)
 {
 	int base_page_size;
 	int opt;
-	int freq = MEMB_CLOCK;
-	int msecs = MEMB_INTVL;
+	int freq = PROFILER_CLOCK;
+	int msecs = PROFILER_INTVL;
 	int err = -1;
 	struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
 	char *include_pids = NULL;
 	char *include_ppids = NULL;
 	char *include_cpus = NULL;
+	char *filter_str = NULL;
 	char buffer[256];
 	cpu_set_t *cpusetp;
 	size_t size;
@@ -384,6 +392,9 @@ int main(int argc, char **argv)
 			break;
 		case 'f':
 			freq = atoi(optarg);
+			break;
+		case 'F':
+			filter_str = optarg;
 			break;
 		case 'p':
 			include_pids = optarg;
@@ -467,11 +478,11 @@ int main(int argc, char **argv)
 		if (iprofiler)
 			err = iprofiler_function(argv[0], freq, msecs,
 						 include_pids, include_ppids,
-						 cpusetp);
+						 cpusetp, filter_str);
 		else
 			err = lbr_profiler_function(argv[0], freq, msecs,
 						    include_pids, include_ppids,
-						    cpusetp);
+						    cpusetp, filter_str);
 
 	}  while(err == ETIMEDOUT);
 

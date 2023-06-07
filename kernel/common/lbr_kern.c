@@ -29,18 +29,19 @@
 #include "memory_profiler_arch.h"
 #include "memory_profiler_common.h"
 #include "memory_profiler_pvt.h"
+#include "profiler_common.h"
 #include "lbr_common.h"
 
 struct {
         __uint(type, BPF_MAP_TYPE_HASH);
-        __type(key,   struct lbr_pbe_key);
+        __type(key, struct lbr_pbe_key);
         __type(value, struct lbr_pbe_val);
         __uint(max_entries, MAX_LBR_SAMPLES);
 } lbr_pbe SEC(".maps");
 
 struct {
         __uint(type, BPF_MAP_TYPE_HASH);
-        __type(key,   u32);
+        __type(key, u32);
         __type(value, struct lbr_pbe_flags);
         __uint(max_entries, MAX_LBR_SAMPLES);
 } lbr_pbe_flags SEC(".maps");
@@ -105,7 +106,12 @@ int lbr_sampler(struct bpf_perf_event_data *ctx)
 	struct perf_branch_entry *src = NULL, dst;
 	u64 tgid;
 
+
+	/* Global initialization */
 	init_function();
+
+	/* Local initialization */
+	init_profiler();
 
 	tgid = bpf_get_current_pid_tgid();
 	if (!valid_pid(tgid >> 32))
@@ -127,7 +133,10 @@ int lbr_sampler(struct bpf_perf_event_data *ctx)
 		if (!dst.from && !dst.to)
 			break;
 
-		save_pbe_sample(&dst, tgid);
+		if (profiler_valid_addr(dst.from) ||
+		    profiler_valid_addr(dst.to))
+			save_pbe_sample(&dst, tgid);
+
 		src++;
 	}
 

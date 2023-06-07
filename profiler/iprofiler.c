@@ -59,6 +59,7 @@
 #include "membalancer_utils.h"
 #include "membalancer_user.h"
 #include "membalancer_lib.h"
+#include "profiler_common.h"
 #include "profiler_pvt.h"
 
 #define MAX_FUNC_NAME 20
@@ -74,7 +75,7 @@
 #define MIN_FOR_LATENCY 10
 static int light_semaphore;
 #undef MIN_SAMPLES
-#define MIN_SAMPLES 500
+#define MIN_SAMPLES 50
 
 struct function_info {
 	u64  ip;
@@ -785,10 +786,10 @@ void iprofiler_report(bool summary)
 
 int iprofiler_function(const char *kernobj, int freq, int msecs,
 		       char *include_pids, char *include_ppids,
-		       cpu_set_t *cpusetp)
+		       cpu_set_t *cpusetp, char *filter_str)
 {
 	int msecs_nap;
-	int err = -1;
+	int err;
 	struct bpf_object *obj = NULL;
 	struct bpf_program *prog[TOTAL_BPF_PROGRAMS];
 	struct bpf_link **code_links = NULL, **data_links = NULL;
@@ -799,6 +800,22 @@ int iprofiler_function(const char *kernobj, int freq, int msecs,
 	unsigned long code_cnt_old, data_cnt_old;
 	unsigned long code_cnt_new, data_cnt_new;
 	struct timeval start;
+	struct profiler_filter filter[MAX_PROFILER_FILTERS];
+	int filters;
+
+	if (filter_str) {
+		/*
+		 * Returns 0 or a positive number if successful, else
+		 * an error code.
+		 */
+		err = profiler_parse_filter(filter_str, filter,
+					    MAX_PROFILER_FILTERS);
+		if (err < 0)
+			return err;
+		filters = err;
+	}
+
+	err = -EINVAL;
 
 	code_links = calloc(nr_cpus, sizeof(*code_links));
 	if (!code_links) {
@@ -831,6 +848,12 @@ int iprofiler_function(const char *kernobj, int freq, int msecs,
 	if (bpf_object__load(obj)) {
 		fprintf(stderr, "ERROR: loading BPF object file failed\n");
 		goto cleanup;
+	}
+
+	if (filter_str) {
+		err = profiler_fill_filter(obj, filter, filters);
+   		if (err)
+			goto cleanup;
 	}
 
 	/* Resetting BPF map fd list */

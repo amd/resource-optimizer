@@ -61,6 +61,7 @@
 #include "membalancer_lib.h"
 #include "profiler_pvt.h"
 #include "lbr_common.h"
+#include "profiler_common.h"
 
 struct lbr_pbe_kv {
 	struct lbr_pbe_key key;
@@ -269,15 +270,32 @@ static void lbr_profiler_process_samples(int fd_pbe, int fd_pbe_flags)
 
 int lbr_profiler_function(const char *kernobj, int freq, int msecs,
 		       char *include_pids, char *include_ppids,
-		       cpu_set_t *cpusetp)
+		       cpu_set_t *cpusetp, char *filter_str)
 {
-	int err = -1;
+	int err;
 	struct bpf_object *obj = NULL;
 	struct bpf_program *prog[TOTAL_BPF_PROGRAMS];
 	struct bpf_link **lbr_links = NULL;
 	char filename[256];
 	int map_fd[TOTAL_MAPS];
 	struct timeval start;
+	struct profiler_filter filter[MAX_PROFILER_FILTERS];
+	int filters;
+
+	if (filter_str) {
+		/*
+		 * Returns 0 or a positive number if successful, else
+		 * an error code.
+		 */
+		err = profiler_parse_filter(filter_str, filter,
+						MAX_PROFILER_FILTERS);
+		if (err < 0)
+			return err;
+
+		filters = err;
+	}
+
+	err = -EINVAL;
 
 	lbr_links = calloc(nr_cpus, sizeof(*lbr_links));
 	if (!lbr_links) {
@@ -299,6 +317,12 @@ int lbr_profiler_function(const char *kernobj, int freq, int msecs,
 	if (bpf_object__load(obj)) {
 		fprintf(stderr, "ERROR: loading BPF object file failed\n");
 		goto cleanup;
+	}
+
+	if (filter_str) {
+		err = profiler_fill_filter(obj, filter, filters);
+		if (err)
+			goto cleanup;
 	}
 
 	/* Resetting BPF map fd list */

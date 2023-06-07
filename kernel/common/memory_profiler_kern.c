@@ -289,10 +289,11 @@ static bool valid_pid(pid_t pid)
 #include "../arch/x86/others/memory_profiler.c"
 #include "../arch/x86/others/lbr_profiler.c"
 #endif
-
+#include "profiler_kern_common.c"
 #include "memstats_kern.c"
 #include "processtats_kern.c"
 #include "lbr_kern.c"
+#include "profiler_kern.c"
 #include "heap_kern.c"
 
 

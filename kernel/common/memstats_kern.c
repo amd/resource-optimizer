@@ -209,14 +209,16 @@ static int process_data_samples(struct data_sample *data, u64 page_size)
 	return 0;
 }
 
-SEC("perf_event")
-int memstats_data_sampler(struct bpf_perf_event_data *ctx)
+int memstats_data_sampler_function(struct bpf_perf_event_data *ctx,
+				   bool filter)
 {
 	struct data_sample *data;
 	u64 tgid;
 	int err;
 
 	init_function();
+	if (filter)
+		init_profiler();
 
 	tgid = bpf_get_current_pid_tgid();
 	if (!valid_pid(tgid >> 32))
@@ -233,17 +235,29 @@ int memstats_data_sampler(struct bpf_perf_event_data *ctx)
 	if (err)
 		return err;
 
+	/* Ignore samples outside if filter is set */
+	if (filter && !profiler_valid_addr(data->ip))
+		return 0;
+
 	return process_data_samples(data, my_page_size);
 }
 
 SEC("perf_event")
-int memstats_code_sampler(struct bpf_perf_event_data *ctx)
+int memstats_data_sampler(struct bpf_perf_event_data *ctx)
+{
+	return memstats_data_sampler_function(ctx, false);
+}
+
+int memstats_code_sampler_function(struct bpf_perf_event_data *ctx,
+				   bool filter)
 {
 	struct code_sample *sample;
 	u64 tgid;
 	int err;
 
 	init_function();
+	if (filter)
+		init_profiler();
 
 	tgid = bpf_get_current_pid_tgid();
 	if (!valid_pid(tgid >> 32))
@@ -260,5 +274,15 @@ int memstats_code_sampler(struct bpf_perf_event_data *ctx)
 	if (err)
 		return err;
 
+	/* Ignore samples outside if filter is set */
+	if (filter && !profiler_valid_addr(sample->ip))
+		return 0;
+
 	return process_code_samples(sample, my_page_size);
+}
+
+SEC("perf_event")
+int memstats_code_sampler(struct bpf_perf_event_data *ctx)
+{
+	return memstats_code_sampler_function(ctx, false);
 }
