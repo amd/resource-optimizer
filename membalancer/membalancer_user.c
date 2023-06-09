@@ -101,10 +101,6 @@ static int min_migrated_pages = MIN_MIGRATED_PAGES;
 static unsigned int cpu_nodes;
 static char cmd_args[] = "c:f:F:P:p:r:m:x:n:o:v:U:t:g:D:L:B:R:K:M:G:T:uhcbHVlS::";
 
-static u32 sampling_interval_cnt = 100;
-static u32 sampling_iter;
-bool proc_data_sampling_done = false;
-u32 curr_proc_data_map_idx;
 static char * ebpf_object_dir = "../bin/";
 
 static int min_freemem_pct = 10;
@@ -221,7 +217,7 @@ static void usage(const char *cmd)
 	printf("6. Example for Auto-tuning configuration:\n");
 	printf("%s -f 25 -u -P 1234 -v1 -m 0.0001 -x 1 -r 2 1000 -H\n"
 	       "-S autotune 200\n"
-	       "default sampling count %u\n", cmd, sampling_interval_cnt);
+	       "default sampling count %llu\n", cmd, sampling_interval_cnt);
 	printf("\n");
 	printf("7. Example for memory access tracer or pattern analyzer\n");
 	printf("%s -f 25 -u -P 99053 -v1 -m 0.0001 -x 1 -r 2 1000 -L /tmp/ \n",
@@ -844,43 +840,33 @@ static void process_samples_int(int *map_fd, int msecs, bool code)
 	if (tuning_mode == PROCESS_MOVE) {
 		if ((codecnt_local >= MIN_CODE_SAMPLES) ||
 			(datacnt_local >= MIN_DATA_SAMPLES))
-			process_migrate_processes(map_fd[PROC_STAT_MAP]);
+			process_migrate_balance_processes(map_fd[PROC_STAT_MAP]);
 		return;
 	}
 
-	if (tuning_mode == AUTOTUNE && !proc_data_sampling_done) {
-		/* Capture and update the process run data
-		 * till the sampling_interval_cnt.
-		 */
-		if (sampling_interval_cnt &&
-		    sampling_iter < sampling_interval_cnt) {
-			printf("Capturing process run data :"
-				"sampling_iter=%u/%u\n", sampling_iter,
-				sampling_interval_cnt);
-			update_process_run_data(map_fd[PROC_STAT_MAP]);
-			return;
-        } else {
-			printf("Done capturing data."
-				"Analyzing and setting process tuning.\n");
-			analyze_and_set_autotune_params(
-					&curr_proc_data_map_idx);
-			proc_data_sampling_done = true;
-		}
-
-	}
-
 	if (tuning_mode == AUTOTUNE) {
-		if (curr_proc_data_map_idx) {
-			assert(proc_data_sampling_done == true);
-			move_process(curr_proc_data_map_idx, false);
+		bool tuning_done;
 
-			/* set to indicate no valid entry */
-			curr_proc_data_map_idx = 0;
-			return;
+		if (!proc_data_sampling_done) {
+			autotune_sampler_and_analyzer(map_fd[PROC_STAT_MAP]);
+			if (!proc_data_sampling_done)
+				return;
 		}
 
-		/* Setting memory tuning for rest of the processes */
-		tuning_mode |= MEMORY_MOVE;
+		tuning_done = autotune_tuner();
+		reset_proc_runtime_data();
+
+		if (tuning_done)
+			return;
+
+		if(fallback_to_memory_balance) {
+			/* Setting memory tuning for rest of the processes */
+			printf("\n** Switching to memory balancing!! **\n");
+			tuning_mode |= MEMORY_MOVE;
+		} else {
+			proc_data_sampling_done = false;
+			return;
+		}
 	}
 
 	total_freq_code = 0;

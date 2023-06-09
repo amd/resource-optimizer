@@ -327,7 +327,7 @@ static void cpu_loadavg(union sigval timer_data)
 		double util  = 100.0 * (1.0 - idle_delta / total_delta);
 		numa_node_loadavg[node] += util;
 
-		if ((100 - util) > cpu_idle_threshold) {
+		if ((100 - util) > CPU_IDLE_THRESHOLD) {
 			idle_cpu_cnt[node]++;
 #ifdef CPU_LEVEL_MIG
 			set_idle_cpu(cpu, node);
@@ -343,10 +343,6 @@ static void cpu_loadavg(union sigval timer_data)
 			continue;
 		}
 		numa_node_loadavg[i] /= numa_node_cpu[i].cpu_cnt;
-		/* Throttle the migration by throttling
-		 * idle cpu capacity of each node.
-		 */
-		idle_cpu_cnt[i] /= migration_throttle_limit;
 	}
 	atomic_store(&pending_cpuload_cal, 0);
 	timer_delete(timer_id);
@@ -382,7 +378,7 @@ int get_node_loadavg(int node)
 {
 	if(atomic_load(&pending_cpuload_cal) &&
 			!atomic_load(&error_status)) {
-		usleep(100 * 1000);
+		usleep(500 * 1000);
 		if(atomic_load(&pending_cpuload_cal) ||
 				atomic_load(&error_status))
 			return INT_MAX;

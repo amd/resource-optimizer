@@ -31,13 +31,21 @@
 
 #define MAX_REMOTE_REF 50
 
+#define MAX_NUM_PROC_PER_ITER 8
+#define MIGRATION_THROTTLE 0.2
+#define AUTOTUNE_MIGRATION_THROTTLE 0.5
+
 struct noderef_sample {
     short target_node;
+	short curr_node;
+	short status;
+	short curr_to_target_distance;
     unsigned long pid;
     unsigned long max_ref;
 };
 
 extern struct noderef_sample numa_reference[MAX_PROCESS_STATS_IDX];
-int move_process(u32 max_count, bool sort);
+extern int per_node_thread_cnt[MAX_NUMA_NODES];
+int process_migrate_move_process(u32 max_count, bool autotune);
 
 #endif

@@ -158,4 +158,16 @@ static char *lbr_profiler_map_fd_names[TOTAL_MAPS] = {
 	"lbr_pbe_flags"
 };
 
+/* Autotune specific control params for sampling and analysis of process stats
+ * and defined in processtats_user.c.
+ */
+extern u64 sampling_interval_cnt;
+extern u64 sampling_iter;
+extern bool proc_data_sampling_done;
+extern bool is_begining_of_sampling;
+extern bool fallback_to_memory_balance;
+extern u32 curr_proc_data_map_idx;
+
+/* End of Autotune specific control params.*/
+
 #endif

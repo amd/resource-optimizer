@@ -60,9 +60,8 @@ struct data_samples {
         char          process[PROCESSNAMELEN];
 };
 
-#define node_load_avg_threshold 70
-#define cpu_idle_threshold 80
-#define migration_throttle_limit 10
+#define NODE_LOAD_AVG_THRESHOLD 70
+#define CPU_IDLE_THRESHOLD 80
 extern int idle_cpu_cnt[MAX_NUMA_NODES];
 extern int nr_cpus;
 extern cpu_set_t *cpusetp;
@@ -132,12 +131,16 @@ unsigned long get_physaddr(pid_t pid, unsigned long vaddr);
 bool cpuvendor_supported(void);
 struct bpf_object;
 int fill_numa_address_range_map(struct bpf_object *obj);
-void process_migrate_processes(int map_fd);
+void process_migrate_balance_processes(int map_fd);
 int numa_range_get(int idx, struct numa_range *range);
 int init_heap(struct bpf_object *obj);
 
 void update_process_run_data(int map_fd);
-void analyze_and_set_autotune_params(unsigned *curr_index);
+void reset_proc_runtime_data(void);
+void autotune_filter_data(unsigned *curr_index);
+void autotune_sampler_and_analyzer(int map_fd);
+bool autotune_tuner(void);
+bool is_scattered_proc_group();
 void print_bar(int numa, bool text,
 			bool process_context,
 			bool cpu, double pct);
