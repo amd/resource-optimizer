@@ -152,8 +152,8 @@ static char * get_instruction(unsigned long ip, pid_t pid)
 static void print_hdr(void)
 {
 	printf("\f\r");
-	printf("%4s %-6s %-50s %-35s %6s %7s\n",
-	       "No." , "PID", "FROM", "TO", "COUNT", "PERCENT");
+	printf("%4s %-6s %-6s %-50s %-35s %6s %7s\n",
+	       "No." , "PID", "TID", "FROM", "TO", "COUNT", "PERCENT");
 }
 
 static void lbr_profiler_report(int count, unsigned int total_samples)
@@ -188,8 +188,9 @@ static void lbr_profiler_report(int count, unsigned int total_samples)
 		snprintf(tostr, sizeof(tostr), "%-#lx:%s",
 			 (unsigned long)lbr_pbe_kv[i].key.to, to);
 
-		printf("%4u %6u %-50s %-35s %6u %6u%%\n",
+		printf("%4u %6u %6u %-50s %-35s %6u %6u%%\n",
 			++j,
+			(unsigned int)(lbr_pbe_kv[i].key.tgid >> 32),
 			(unsigned int)lbr_pbe_kv[i].key.tgid,
 			fromstr,
 			tostr,
