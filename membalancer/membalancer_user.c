@@ -285,14 +285,15 @@ static void ibs_fetchop_config_set(void)
 static void page_mover_enqueue(struct page_list *page)
 {
 	int err;
-
 	if (ratelimiter_grant(ratelimiter, PAGES_PER_CALL)) {
 		err = threadpool_add_work(threadpool, page_move_function, page);
 		if (err)
 			printf("Failed to add work to threadpool, error %d\n", err);
 	} else {
-		free(page);
+		err = -EINVAL;
 	}
+	if (err)
+		free(page);
 }
 
 static void page_mover_parallel_enqueue(struct page_list *list,
@@ -1470,7 +1471,7 @@ static int balancer_function_int(const char *kernobj, int freq, int msecs,
 				goto cleanup;
 		}
 		err = threadpool_add_work(threadpool,
-					   update_per_node_freemem, NULL);
+					update_per_node_freemem, NULL);
 		if (err)
 			goto cleanup;
 
@@ -1573,7 +1574,7 @@ int main(int argc, char **argv)
 	char buffer[256];
 	size_t size;
 	unsigned int refresh_rate = REFRESH_RATE;
-	unsigned long capacity;
+	unsigned long capacity = ULONG_MAX;
 
 	nr_cpus = sysconf(_SC_NPROCESSORS_CONF);
 
