@@ -106,6 +106,7 @@ static char * ebpf_object_dir = "../bin/";
 static int min_freemem_pct = 10;
 
 atomic64_t status_code_cnt, status_data_cnt, status_pages_migrated;
+static atomic64_t migrated_page_cnt, total_time_per_page;
 
 #define IBS_FETCH_DEV "/sys/devices/ibs_fetch/type"
 #define IBS_OP_DEV    "/sys/devices/ibs_op/type"
@@ -337,10 +338,15 @@ static void page_move_function(void *arg)
 	struct page_list *page;
 	int err __attribute__((unused));
 	int i;
+	struct timeval start, end;
+	unsigned int time_spent;
+	unsigned int time_per_page = 0;
+	unsigned int page_cnt = 0;
 
 	page = (struct page_list*)arg;
 
 	assert(page->pages);
+	gettimeofday(&start, NULL);
 
 	err = move_pages(page->pid, page->pages,
 			(void **)&page->pagelist,
@@ -348,9 +354,22 @@ static void page_move_function(void *arg)
 			page->status,
 			MPOL_MF_MOVE_ALL);
 
+	gettimeofday(&end, NULL);
+
 	for (i = 0; i < page->pages; i++) {
-		if (page->status[i] == 0)
+		if (page->status[i] == 0) {
 			atomic64_inc(&status_pages_migrated);
+			page_cnt++;
+		}
+	}
+	/* Time spent for move_pages in milliseconds,
+	 * need to add time to atomic variable.
+	 */
+	time_spent = milliseconds_elapsed(&start, &end);
+	if (page_cnt && time_spent) {
+		time_per_page = page_cnt / time_spent;
+		atomic64_add(&migrated_page_cnt, page_cnt);
+		atomic64_add(&total_time_per_page, time_per_page);
 	}
 
 #ifdef DEBUG_ON
@@ -585,6 +604,27 @@ static void process_data_samples(struct bst_node **rootpp,
 					  user_space_only);
 }
 
+static double get_migration_bandwidth(void)
+{
+	double total_time;
+	double bandwidth = 0.0;
+	unsigned long page_cnt, inMB;
+
+	total_time = atomic64_read(&total_time_per_page);
+	atomic64_sub(&total_time_per_page, total_time);
+
+	page_cnt = atomic64_read(&migrated_page_cnt);
+	atomic64_sub(&migrated_page_cnt, page_cnt);
+
+	/* Convert to seconds */
+	total_time = (double) total_time / 1000;
+	if (page_cnt && total_time) {
+		inMB = (page_cnt * 4) / 1024;
+		bandwidth = (double) inMB / total_time;
+	}
+	return bandwidth;
+}
+
 static void print_memory_access_summary_histogram(unsigned long code,
 						  unsigned long data,
 						  unsigned long *codesamples,
@@ -593,6 +633,7 @@ static void print_memory_access_summary_histogram(unsigned long code,
 {
 	int i;
 	double pct;
+	char buf[50];
 
 	printf("\f");
 	printf("%s%s%s", BRIGHT, BCYAN, ULINE);
@@ -628,6 +669,17 @@ static void print_memory_access_summary_histogram(unsigned long code,
 
 		print_bar(i, false, false, false, pct);
 	}
+
+	printf("\n");
+	snprintf(buf, sizeof(buf), "%s%0.2f %s", "MEMORY MIGRATION BANDWIDTH :",
+				get_migration_bandwidth(), "MB_PER_SEC");
+	printf("%s%s%-12s", BRIGHT, MAGENTA, buf);
+
+	printf("\n");
+	printf("MIGRATED PAGES :%-10ld\n",
+		atomic64_read(&status_pages_migrated));
+
+	printf("%s\n", NORM);
 }
 
 static void print_memory_access_summary_in_text(unsigned long code,
@@ -639,7 +691,7 @@ static void print_memory_access_summary_in_text(unsigned long code,
 	int i;
 	static unsigned long counter;
 	double pct;
-	char buf[15];
+	char buf[24];
 	char *title;
 
 	if (is_tier_mode() && !is_default_tier_mode())
@@ -657,6 +709,12 @@ static void print_memory_access_summary_in_text(unsigned long code,
 			snprintf(buf, sizeof(buf), "%s%d_DATA", title, i);
 			printf("%-12s", buf);
 		}
+
+		snprintf(buf, sizeof(buf), "%s", "BANDWIDTH_MB_PER_SEC");
+		printf("%-24s", buf);
+		snprintf(buf, sizeof(buf), "%s", "MIGRATED_PAGES");
+		printf("%-12s", buf);
+
 		printf("%s\n", NORM);
 	}
 
@@ -699,6 +757,9 @@ static void print_memory_access_summary_in_text(unsigned long code,
 		printf("%-12.2lf", pct);
 		printf("%s", NORM);
 	}
+
+	printf("%-24.2lf", get_migration_bandwidth());
+	printf("%-12ld", atomic64_read(&status_pages_migrated));
 
 	printf("\n");
 }

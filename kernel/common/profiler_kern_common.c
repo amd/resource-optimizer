@@ -43,10 +43,10 @@ static volatile int max_filters;
 
 static void init_profiler(void)
 {
-	static volatile unsigned long just_once;
+	static volatile unsigned long once;
 	int key, i;
 
-	if (JUST_ONCE(&just_once, 0, 1) != 0)
+	if (JUST_ONCE(&once, 0, 1) != 0)
 		return;
 
 	for (i = 0; i < MAX_PROFILER_FILTERS; i++) {
