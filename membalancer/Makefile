@@ -1,5 +1,7 @@
-KDIR ?= <..>/linux-5.19
-LIBBPF = <..>/libbpf
+#KDIR ?= <..>/linux-5.19
+#LIBBPF = <..>/libbpf
+KDIR ?= /usr/src/kernels/5.10.23+
+LIBBPF = /home/satyan/libbpf
 CLANG ?= clang
 LLC ?= llc
 MODULE   := membalancer

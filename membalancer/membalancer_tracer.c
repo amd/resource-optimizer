@@ -447,8 +447,7 @@ static struct bst_node * alloc_node(int type)
 				return NULL;
 		}
 
-		node = &code_nodes_array[cur_code_nodes];
-		if (++cur_code_nodes >= max_code_nodes) {
+		if (cur_code_nodes >= max_code_nodes) {
 			code_nodes_array = realloc(code_nodes_array,
 						   sizeof(*node) * 2 *
 						   max_code_nodes);
@@ -457,6 +456,8 @@ static struct bst_node * alloc_node(int type)
 
 			max_code_nodes *= 2;
 		}
+		node = &code_nodes_array[cur_code_nodes];
+		cur_code_nodes++;
 
 		return node;
 	}
@@ -467,8 +468,7 @@ static struct bst_node * alloc_node(int type)
 	if (!data_nodes_array)
 		return NULL;
 
-	node = &data_nodes_array[cur_data_nodes];
-	if (++cur_data_nodes >= max_data_nodes) {
+	if (cur_data_nodes >= max_data_nodes) {
 		data_nodes_array = realloc(data_nodes_array, sizeof(*node) *
 					 max_data_nodes * 2);
 		if (!data_nodes_array)
@@ -476,6 +476,8 @@ static struct bst_node * alloc_node(int type)
 
 		max_data_nodes *= 2;
 	}
+	node = &data_nodes_array[cur_data_nodes];
+	cur_data_nodes++;
 
 	return node;
 }
@@ -490,10 +492,10 @@ static int add_to_bst(struct bst_node **root, int type, unsigned vaddr,
 	dummy.basepage &= ~(base_page_size - 1);
 	if (*root) {
 		nodepp = tfind(&dummy, (void **)root, bst_cmp);
-     		if (nodepp) {
+		if (nodepp) {
 			node = *nodepp;
-			update_node(type, dummy.basepage, vaddr, paddr, refcnt,	
-				    node, physical_mode);
+			update_node(type, dummy.basepage, vaddr, paddr, refcnt,
+				node, physical_mode);
 			return 0;
 		}
 	}
@@ -636,7 +638,7 @@ static unsigned long collect_data_statistics(struct bst_node **data_root,
 
 	assert(*data_root == NULL);
 	for (i = 0; i < size /sizeof(*entry); i++) {
-		err = add_to_bst(data_root, CODE_ENTRY, entry->vaddr,
+		err = add_to_bst(data_root, DATA_ENTRY, entry->vaddr,
 				 entry->paddr, entry->count,
 				 physical_mode);
 		if (err)
@@ -663,7 +665,7 @@ static void update_stats(unsigned total, unsigned long count,
 
 	if ((count * 100 / total) >= 10) {
 		stats->ccount[GTEQ_10_PCT] += count;
-		stats->count[GTEQ_5_PCT]++;
+		stats->count[GTEQ_10_PCT]++;
 	} else if ((count * 100 / total) >= 5) {
 		stats->ccount[GTEQ_5_PCT] += count;
 		stats->count[GTEQ_5_PCT]++;
@@ -1018,7 +1020,7 @@ void report_tracer_statistics(void)
 		return;
 	}
 
-	process_code_statistics(data_root, code_cnt, &code_stats,
+	process_code_statistics(code_root, code_cnt, &code_stats,
 				 pages_used, pages_unused, pages);
 	process_data_statistics(data_root, data_cnt, &data_stats,
 			      pages_used, pages_unused, pages);
