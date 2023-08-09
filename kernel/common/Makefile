@@ -1,7 +1,5 @@
-#KDIR ?= <..>/linux-5.19
-#LIBBPF = <..>/libbpf
-KDIR ?= /usr/src/kernels/5.10.23+
-LIBBPF = /home/satyan/libbpf
+KDIR ?= <..>/linux-5.19
+LIBBPF = <..>/libbpf
 CLANG ?= clang
 LLC ?= llc
 ARCH := $(subst x86_64,x86,$(shell arch))
