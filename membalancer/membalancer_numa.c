@@ -2,7 +2,7 @@
  * membalancer_numa.c - Automatic NUMA memory balancer Based on IBS sampler
  *
  * Copyright (c) 2015 The Libbpf Authors. All rights reserved.
- * Copyright (c) 2023 Advanced Micro Devices, Inc. All Rights Reserved.
+ * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -30,24 +30,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
-#include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <string.h>
 #include <assert.h>
 #include <errno.h>
 #include <numa.h>
-#include <numaif.h>
 #include <stdbool.h>
 #include <sys/param.h>
-#include <pthread.h>
 #include <stdatomic.h>
+
 #include "memory_profiler_arch.h"
 #include "memory_profiler_common.h"
 #include "thread_pool.h"
 #include "membalancer_utils.h"
 #include "membalancer_numa.h"
-
 
 static atomic_int pending_freemem_cal;
 static atomic_int error_status;  /* thread error status */

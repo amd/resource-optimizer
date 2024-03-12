@@ -29,16 +29,9 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <string.h>
 #include <assert.h>
 #include <errno.h>
-#include <numa.h>
-#include <numaif.h>
-#include <stdbool.h>
+
 #include "memory_profiler_common.h"
 #include "memory_profiler_arch.h"
 #include "thread_pool.h"

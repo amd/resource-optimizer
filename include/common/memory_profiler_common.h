@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 Advanced Micro Devices, Inc. All Rights Reserved.
+ * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,17 +20,19 @@
 
 #ifndef _MEMORY_PROFILER_COMMON_H_
 #define _MEMORY_PROFILER_COMMON_H_
+
+#include "resource_manager_types.h"
+
 #ifndef __KERNEL__
-#include<linux/types.h>
-typedef __u32 u32;
-typedef __u64 u64;
 #ifndef PAGE_SIZE
 #define PAGE_SIZE 4096
 #endif
+
 #ifndef PAGE_SHIFT
 #define PAGE_SHIFT 12
 #endif
 #endif
+
 #define MAX_NUMA_NODES 64
 #define KERN_PAGE_OFFSET 0xffff880000000000
 #define MAX_LATENCY_IDX 128
@@ -109,6 +111,18 @@ struct data_sample {
 #define ATOMIC_READ(v) __sync_fetch_and_add_N((v), 0)
 #define ATOMIC_READ(v) (*v)
 */
+#ifndef PAGE_SHIFT
+#define PAGE_SHIFT 12
+#endif
+
+#define likely(x)       __builtin_expect(!!(x), 1)
+#define unlikely(x)     __builtin_expect(!!(x), 0)
+
+#define atomic_read(v) ((v)->counter)
+#define atomic_set(v,i) (((v)->counter) = (i))
+#define atomic64_set(v,i) (((v)->counter) = (i))
+#define atomic64_read(v) __sync_fetch_and_add(&(v)->counter, 0)
+
 #define ATOMIC_INC(v)  __atomic_add_fetch((v), 1, __ATOMIC_SEQ_CST)
 #define ATOMIC64_READ(v) atomic64_read((atomic64_t *)(v))
 #define ATOMIC_READ(v)   atomic_read((atomic_t *)(v))
@@ -152,6 +166,7 @@ static inline bool just_once(volatile unsigned long *v)
 #define ATOMIC_INC(v) __sync_fetch_and_add((v), 1)
 */
 #ifndef atomic_t
+
 typedef struct {
 	volatile int counter;
 } atomic_t;
@@ -168,16 +183,4 @@ typedef struct {
 #define atomic_cmxchg(v, cur, new) __sync_val_compare_and_swap((v), cur, new)
 #endif
 #endif
-
-#ifndef __KERNEL__
-typedef __u32 u32;
-typedef __u64 u64;
-#ifndef PAGE_SIZE
-#define PAGE_SIZE 4096
-#endif
-#ifndef PAGE_SHIFT
-#define PAGE_SHIFT 12
-#endif
-#endif
-
 #endif

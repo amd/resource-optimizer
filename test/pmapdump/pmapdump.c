@@ -1,12 +1,9 @@
 /*
  * Automatic NUMA memory balancer Based on IBS sampler
  *
- * Copyright 2022 AMD, Inc.
+ * Copyright 2023-2024 AMD, Inc.
  */
 #include <stdio.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <errno.h>

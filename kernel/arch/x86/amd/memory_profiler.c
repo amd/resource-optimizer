@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 Advanced Micro Devices, Inc. All Rights Reserved.
+ * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -17,14 +17,8 @@
  * IBS sampler : Arm IBS fetch and op sampling, collect both kernel and
  * process samples.
  */
-#include <linux/version.h>
-#include <bpf/bpf_tracing.h>
-#include <linux/ptrace.h>
-#include <uapi/linux/bpf.h>
-#include <uapi/linux/bpf_perf_event.h>
-#include <bpf/bpf_helpers.h>
-#include <linux/perf_event.h>
-#include <bpf/bpf_helpers.h>
+
+#include <errno.h>
 #include "memory_profiler_arch.h"
 
 static u32 ibs_fetch_latency(u64 reg)
@@ -55,6 +49,10 @@ static int ibs_fetch_event(struct bpf_perf_event_data *ctx,
 	void *addr;
 	u64 fetch_regs[IBSFETCH_REG_COUNT];
 
+	/* To comply with bpf validator */
+	if (unlikely(code == NULL))
+		return -EINVAL;
+
 	ip = PT_REGS_IP(&ctx->regs);
 	if (user_space_only && IBS_KERN_SAMPLE(ip))
 		return -EINVAL;
@@ -62,19 +60,23 @@ static int ibs_fetch_event(struct bpf_perf_event_data *ctx,
 	/* Collect samples from IBS Fetch registers */
 	kern_ctx = (struct bpf_perf_event_data_kern *)ctx;
 
-	if (bpf_probe_read(&data, sizeof(data), &(kern_ctx->data)))
+	if (bpf_core_read(&data, sizeof(data), &(kern_ctx->data)))
 		return -EFAULT;
 
-	if (bpf_probe_read(&raw, sizeof(raw), &(data->raw)))
+	if (bpf_core_read(&raw, sizeof(raw), &(data->raw)))
 		return -EFAULT;
 
-	if (bpf_probe_read(&frag, sizeof(frag), &(raw->frag)))
+	if (bpf_core_read(&frag, sizeof(frag), &(raw->frag)))
 		return -EFAULT;
 
 	ibs_data = (struct perf_ibs_fetch_data *)frag.data;
 	addr     = &ibs_data->data[0];
 
-	if (bpf_probe_read(fetch_regs, sizeof(fetch_regs), addr))
+	/* To comply with bpf validator */
+	if (unlikely(addr == NULL))
+		return -EINVAL;
+
+	if (bpf_core_read(fetch_regs, sizeof(fetch_regs), addr))
 		return -EFAULT;
 
 	if (!IBS_FETCH_PHYSADDR_VALID(fetch_regs[IBS_FETCH_CTL]))
@@ -123,26 +125,34 @@ static int ibs_op_event(struct bpf_perf_event_data *ctx,
 	/* Collect samples from IBS OP registers */
 	kern_ctx = (struct bpf_perf_event_data_kern *)ctx;
 
-	if (bpf_probe_read(&data, sizeof(data), &(kern_ctx->data)))
+	if (bpf_core_read(&data, sizeof(data), &(kern_ctx->data)))
 		return -EFAULT;
 
-	if (bpf_probe_read(&raw, sizeof(raw), &(data->raw)))
+	if (bpf_core_read(&raw, sizeof(raw), &(data->raw)))
 		return -EFAULT;
 
-	if (bpf_probe_read(&frag, sizeof(frag), &(raw->frag)))
+	if (bpf_core_read(&frag, sizeof(frag), &(raw->frag)))
 		return -EFAULT;
 
 	/* ibs fetch data  below is not a mistake */
 	ibs_data = (struct perf_ibs_fetch_data *)frag.data;
 	addr     = &ibs_data->data[0];
 
-	if (bpf_probe_read(op_regs, sizeof(op_regs), addr))
+	/* To comply with bpf validator */
+	if (unlikely(addr == NULL))
+		return -EINVAL;
+
+	if (bpf_core_read(op_regs, sizeof(op_regs), addr))
 		return -EFAULT;
 
 	if (!IBS_OP_LINADDR_VALID(op_regs[IBS_OP_DATA3]))
 		return -EINVAL;
 
 	if (!IBS_OP_PHYSADDR_VALID(op_regs[IBS_OP_DATA3]))
+		return -EINVAL;
+
+	/* To comply with bpf validator */
+	if (unlikely(sample == NULL))
 		return -EINVAL;
 
 	sample->vaddr = op_regs[IBS_DC_LINADDR];

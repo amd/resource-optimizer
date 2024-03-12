@@ -14,10 +14,15 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
- * Header file for architectural specific handlers for memory sampling.
  */
 
-#ifndef _MEMORY_PROFILER_OTHERS_
-#define _MEMORY_PROFILER_OTHERS_
-#define MAX_LBR_ENTRIES 32
+#ifndef _RESOURCE_MANAGER_TYPES_H_
+#define _RESOURCE_MANAGER_TYPES_H_
+
+typedef unsigned int __u32;
+typedef long long unsigned int __u64;
+
+typedef __u32 u32;
+typedef __u64 u64;
+
 #endif

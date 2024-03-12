@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 Advanced Micro Devices, Inc. All Rights Reserved.
+ * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -16,14 +16,7 @@
  *
  * LBR sampler : Using natie processor telemetry
  */
-#include <linux/version.h>
-#include <bpf/bpf_tracing.h>
-#include <linux/ptrace.h>
-#include <uapi/linux/bpf.h>
-#include <uapi/linux/bpf_perf_event.h>
-#include <bpf/bpf_helpers.h>
-#include <linux/perf_event.h>
-#include <bpf/bpf_helpers.h>
+
 #include <memory_profiler_arch.h>
 
 int other_arch_lbr_sample(struct bpf_perf_event_data *ctx,

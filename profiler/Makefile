@@ -1,4 +1,3 @@
-KDIR ?= <..>/linux-5.19
 LIBBPF = <..>/libbpf
 CLANG ?= clang
 LLC ?= llc
@@ -23,9 +22,6 @@ LIBS := ${LIBBPF}/src/libbpf.so -lz -lelf -lnuma -lpthread -lrt
 #DEFS = -DCCMD_SOFTWARE_SAMPLING
 
 USR_INCLUDE := -I. \
-	-I${KDIR}/tools/perf/ \
-	-I${KDIR}/tools/lib/ \
-	-I${KDIR}/tools/testing/selftests/bpf/ \
 	-I${LIBBPF}/src/ \
 	-I${LIBBPF}/include/ \
 	-I../membalancer/ \

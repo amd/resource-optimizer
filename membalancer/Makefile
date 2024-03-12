@@ -1,4 +1,3 @@
-KDIR ?= <..>/linux-5.19
 LIBBPF = <..>/libbpf
 CLANG ?= clang
 LLC ?= llc
@@ -25,9 +24,6 @@ DEFS = -DMEMBALANCE_FORK ${CPU_TYPE}
 #DEFS = -DCCMD_SOFTWARE_SAMPLING
 
 USR_INCLUDE := -I. \
-	-I${KDIR}/tools/perf \
-	-I${KDIR}/tools/lib \
-	-I${KDIR}/tools/testing/selftests/bpf/ \
 	-I${LIBBPF}/src \
 	-I${LIBBPF}/include \
 	-I../include/ \

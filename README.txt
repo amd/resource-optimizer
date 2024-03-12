@@ -48,11 +48,17 @@ Scripts:
 
 Build Information:
 
-A note on external dependencies: To build memory balancer tool, it requires libbpf to be downloaded from https://github.com/libbpf/libbpf. The location of libbpf needs to be mentioned in the Makefile via the variable LIBBPF. The location of kernel source code also needs to be mentioned via the variable KDIR.
+A note on external dependencies: To build memory balancer tool
+1) libbpf
+It requires libbpf to be downloaded from https://github.com/libbpf/libbpf. The location of libbpf needs to be mentioned in the Makefile via the variable LIBBPF. The location of kernel source code also needs to be mentioned via the variable KDIR.
+
+2) bpftool needs to be installed for generating vmlinux.h file for core.
+   Run following command for respective architecture vmlinux.h file
+	bpftool btf dump file /sys/kernel/btf/vmlinux format c > ../../include/arch/x86/vmlinux.h
 
 To build kernel module:
 cd kernel/common
-make 
+make
 
 To build memory balancer application:
 cd membalancer

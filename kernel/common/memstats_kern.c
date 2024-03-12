@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 Advanced Micro Devices, Inc. All Rights Reserved.
+ * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,15 +18,7 @@
  * saved them into their respective maps
  * process samples.
  */
-#pragma once
-#include <linux/version.h>
-#include <bpf/bpf_tracing.h>
-#include <linux/ptrace.h>
-#include <uapi/linux/bpf.h>
-#include <uapi/linux/bpf_perf_event.h>
-#include <bpf/bpf_helpers.h>
-#include <linux/perf_event.h>
-#include <bpf/bpf_helpers.h>
+#include <string.h>
 #include <assert.h>
 #include "memory_profiler_arch.h"
 #include "memory_profiler_common.h"
@@ -116,6 +108,10 @@ static int process_code_samples(struct code_sample *code, u32 page_size)
 {
 	u64 key;
 	struct code_sample *saved;
+
+	/* To comply with bpf validator */
+	if (unlikely(code == NULL))
+		return -EINVAL;
 
 #ifdef MEMB_USE_VA
 	key = code->vaddr;

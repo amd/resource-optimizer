@@ -2,7 +2,7 @@
  * membalancer_migrate.c - Process migration functions
  *
  * Copyright (c) 2015 The Libbpf Authors. All rights reserved.
- * Copyright (c) 2023 Advanced Micro Devices, Inc. All Rights Reserved.
+ * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -26,13 +26,12 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
  */
-
 #define _GNU_SOURCE
-#include<stdio.h>
-#include<stdlib.h>
-#include<sched.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <errno.h>
 #include <limits.h>
+
 #include "memory_profiler_common.h"
 #include "memory_profiler_arch.h"
 #include "thread_pool.h"

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 Advanced Micro Devices, Inc. All Rights Reserved.
+ * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,10 +20,9 @@
 
 #ifndef _MEMORY_PROFILER_AMD_
 #define _MEMORY_PROFILER_AMD_
-#include <linux/types.h>
 
-typedef __u32 u32;
-typedef __u64 u64;
+#include "resource_manager_types.h"
+
 extern int verbose;
 
 enum {

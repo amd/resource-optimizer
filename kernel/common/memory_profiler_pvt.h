@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 Advanced Micro Devices, Inc. All Rights Reserved.
+ * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -42,5 +42,4 @@ int memstats_data_sampler_function(
 
 static void init_profiler(void);
 static bool profiler_valid_addr(u64 addr);
-
 #endif

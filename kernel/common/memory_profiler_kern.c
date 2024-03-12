@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 Advanced Micro Devices, Inc. All Rights Reserved.
+ * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -17,15 +17,12 @@
  * code and data sampler : Architectural independent functions for code and
  * data sampling.
  */
-#include <linux/version.h>
-#include <uapi/linux/types.h>
+
+#include "vmlinux.h"
+#include <bpf_core_read.h>
 #include <bpf/bpf_tracing.h>
-#include <linux/ptrace.h>
-#include <uapi/linux/bpf.h>
-#include <uapi/linux/bpf_perf_event.h>
 #include <bpf/bpf_helpers.h>
-#include <linux/perf_event.h>
-#include <bpf/bpf_helpers.h>
+
 #include "memory_profiler_arch.h"
 #include "memory_profiler_common.h"
 
@@ -248,13 +245,13 @@ static bool valid_pid_with_task(pid_t pid, struct task_struct *mytask)
 		else
 			task = (struct task_struct *)bpf_get_current_task();
 
-		bpf_probe_read(&parent, sizeof(parent), &task->parent);
+		bpf_core_read(&parent, sizeof(parent), &task->parent);
 		if (parent) {
-			bpf_probe_read(&pid, sizeof(pid), &task->pid);
-			bpf_probe_read(&ppid, sizeof(ppid), &parent->pid);
+			bpf_core_read(&pid, sizeof(pid), &task->pid);
+			bpf_core_read(&ppid, sizeof(ppid), &parent->pid);
 			if (bpf_map_lookup_elem(&ppid_include, &ppid))
 				return true;
-		} 
+		}
 
 		return false;
 	}
@@ -267,7 +264,7 @@ static bool valid_pid_with_task(pid_t pid, struct task_struct *mytask)
 	if (bpf_map_lookup_elem(&pid_include, &nilpid))
 		return true;
 
-	/* 
+	/*
 	 * Finally, the check whether to sample every pid in the system or
 	 * not.
 	 */
@@ -295,7 +292,5 @@ static bool valid_pid(pid_t pid)
 #include "lbr_kern.c"
 #include "profiler_kern.c"
 #include "heap_kern.c"
-
-
 
 char _license[] SEC("license") = "GPL";

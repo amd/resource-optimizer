@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 Advanced Micro Devices, Inc. All Rights Reserved.
+ * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,7 +20,9 @@
 
 #ifndef _LBR_COMMON_H_
 #define _LBR_COMMON_H_
+
 #define MAX_LBR_SAMPLES (64 * 1024)
+
 struct lbr_pbe_key {
 	u64 tgid;
 	u64 from;

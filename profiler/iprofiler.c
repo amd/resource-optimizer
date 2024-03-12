@@ -2,7 +2,7 @@
  * iprofiler.c - Instruction prpfiling code
  *
  * Copyright (c) 2015 The Libbpf Authors. All rights reserved.
- * Copyright (c) 2023 Advanced Micro Devices, Inc. All Rights Reserved.
+ * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -27,30 +27,16 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 #define _GNU_SOURCE
-#include <stdio.h>
-#include <sys/types.h>
+#include <search.h>
 #include <sys/stat.h>
-#include <fcntl.h>
 #include <stdlib.h>
-#include <unistd.h>
 #include <errno.h>
-#include <string.h>
-#include <linux/bpf.h>
-#include <bpf/bpf.h>
-#include <bpf/libbpf.h>
-#include <sys/resource.h>
-#include <perf-sys.h>
-#include <trace_helpers.h>
 #include <assert.h>
-#include <time.h>
-#include <limits.h>
 #include <sys/time.h>
 #include <sys/param.h>
-#include <signal.h>
-#include <sys/wait.h>
-#include <ctype.h>
-#include <search.h>
-#include <linux/close_range.h>
+#include <bpf/bpf.h>
+#include <bpf/libbpf.h>
+
 #include "memory_profiler_arch.h"
 #include "memory_profiler_common.h"
 #include "thread_pool.h"

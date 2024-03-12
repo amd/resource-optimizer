@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 Advanced Micro Devices, Inc. All Rights Reserved.
+ * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All Rights Reserved.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -16,20 +16,14 @@
  *
  * LBR sampler : Using AMD LBR telemetry
  */
-#include <linux/version.h>
-#include <bpf/bpf_tracing.h>
-#include <linux/ptrace.h>
-#include <uapi/linux/bpf.h>
-#include <uapi/linux/bpf_perf_event.h>
-#include <bpf/bpf_helpers.h>
-#include <linux/perf_event.h>
-#include <bpf/bpf_helpers.h>
+
 #include <memory_profiler_arch.h>
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 22))
+extern int LINUX_KERNEL_VERSION __kconfig;
+
 static int amd_lbr_sample(struct bpf_perf_event_data *ctx,
-			  struct perf_branch_entry **firstentryout,
-			  int *entries)
+		struct perf_branch_entry **firstentryout,
+		int *entries)
 {
 	struct bpf_perf_event_data_kern *kern_ctx;
 	struct perf_sample_data data;
@@ -37,21 +31,25 @@ static int amd_lbr_sample(struct bpf_perf_event_data *ctx,
 	struct perf_branch_stack br;
 	u64 tgid;
 
+	if (LINUX_KERNEL_VERSION < KERNEL_VERSION(6, 1, 22))
+		return -EINVAL;
+
 	tgid = bpf_get_current_pid_tgid();
 	if (!valid_pid(tgid >> 32))
 		return -EINVAL;
 
 	kern_ctx = (struct bpf_perf_event_data_kern *)ctx;
-	if (bpf_probe_read(&datap, sizeof(datap), &(kern_ctx->data)))
+
+	if (bpf_core_read(&datap, sizeof(datap), &(kern_ctx->data)))
 		return -EFAULT;
 
-	if (bpf_probe_read(&data, sizeof(data), datap))
+	if (bpf_core_read(&data, sizeof(data), datap))
 		return -EFAULT;
 
 	if ((data.sample_flags & PERF_SAMPLE_BRANCH_STACK) == 0)
 		return -EINVAL;
 
-	if (bpf_probe_read(&br, sizeof(br), data.br_stack))
+	if (bpf_core_read(&br, sizeof(br), data.br_stack))
 		return -EFAULT;
 
 	if (entries)
@@ -62,19 +60,11 @@ static int amd_lbr_sample(struct bpf_perf_event_data *ctx,
 
 	return 0;
 }
-#else
-static int amd_lbr_sample(struct bpf_perf_event_data *ctx,
-			  struct perf_branch_entry **firstentryout,
-			  int *entries)
-{
-	return -EINVAL;
-}
-#endif
 
 static int amd_lbr_sample_entry(struct perf_branch_entry *src,
 				struct perf_branch_entry *dst)
 {
-	if (bpf_probe_read(dst, sizeof(*dst), src))
+	if (bpf_core_read(dst, sizeof(*dst), src))
 		return -EFAULT;
 
 	return 0;

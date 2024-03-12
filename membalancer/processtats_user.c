@@ -2,7 +2,7 @@
  * processtats_user.c - Automatic NUMA memory balancer Based on IBS sampler
  *
  * Copyright (c) 2015 The Libbpf Authors. All rights reserved.
- * Copyright (c) 2023 Advanced Micro Devices, Inc. All Rights Reserved.
+ * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -28,35 +28,14 @@
  */
 
 #define _GNU_SOURCE
-#include <stdio.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <errno.h>
-#include <string.h>
-#include <math.h>
-#include <linux/perf_event.h>
-#include <linux/ptrace.h>
-#include <linux/bpf.h>
+#include <assert.h>
+#include <sys/time.h>
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
-#include <sys/resource.h>
-#include <perf-sys.h>
-#include <trace_helpers.h>
-#include <assert.h>
-#include <numa.h>
-#include <numaif.h>
-#include <time.h>
-#include <pthread.h>
-#include <limits.h>
-#include <sys/time.h>
-#include <signal.h>
-#include <sys/wait.h>
-#include <ctype.h>
-#include <search.h>
-#include <sched.h>
+
 #include "memory_profiler_common.h"
 #include "memory_profiler_arch.h"
 #include "thread_pool.h"
