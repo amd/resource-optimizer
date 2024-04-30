@@ -54,7 +54,7 @@ It requires libbpf to be downloaded from https://github.com/libbpf/libbpf. The l
 
 2) bpftool needs to be installed for generating vmlinux.h file for core.
    Run following command for respective architecture vmlinux.h file
-	bpftool btf dump file /sys/kernel/btf/vmlinux format c > ../../include/arch/x86/vmlinux.h
+	bpftool btf dump file /sys/kernel/btf/vmlinux format c > ./include/arch/x86/vmlinux.h
 
 To build kernel module:
 cd kernel/common

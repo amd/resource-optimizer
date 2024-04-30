@@ -1,7 +1,6 @@
 /*
  * Rate limiter: simple token bucket algorithm
  *
- * Copyright (c) 2015 The Libbpf Authors. All rights reserved.
  * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
