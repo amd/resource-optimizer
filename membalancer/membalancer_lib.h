@@ -2,6 +2,7 @@
  * membalancer_lib.h - Memory balancer library functions
  * and analyze the instruction and data (if available) samples.
  *
+ * Copyright (c) 2015 The Libbpf Authors. All rights reserved.
  * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
