@@ -111,7 +111,7 @@ static void usage(const char *cmd)
 	       "default %d\n", PROFILER_INTVL);
 
 	printf("\nExamples\n");
-	printf("Example 1: For instructiona and data profiling ...\n");
+	printf("Example 1: For instruction and data profiling ...\n");
 	printf("%s -f 25 -u  -v4 -M 1 -r 2 5000  -I5 -r2 [P|p pid[,pid2]\n",
 		cmd);
 	printf("\nExample 2: For last branch record (LBR) ...\n");

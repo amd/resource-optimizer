@@ -1,3 +1,8 @@
+The idea behind the resource optimizer is to improve overall application performance by optimizing system resources (memory, CPU, IO, networking). This is done by observing bottlenecks using AMD telemetry, OS performance counters and making corrective actions.
+
+The focus so far of the resource optimizer is its memory management component called memory balancer. A second part part of the optimizer is the profiler which takes advantages of IBS and LBR (last branch record) telemetry available in AMD microprocessors.
+
+Memory balancer:
 Memory balancer is a prototype tool for balancing memory across multiple tiers of memory or NUMA nodes. The tool currently supports:
 
 1) NUMA balancing which overlaps with Linux Autonuma. However the tool is based on AMD Instruction Based Sampling (IBS)
@@ -6,44 +11,22 @@ Memory balancer is a prototype tool for balancing memory across multiple tiers o
 
 For more information such as command lines, the tools needs to be invoked with the option -h.
 
-Major Source Code Files:
+AMD telemetry-based simple profiler:
 
-1) kernel/amd:
-generic_kern_amd.c : The code that deals with AMD IBS telemetry.
+Profiler:
+This is a simple application profiling tool which operates in two modes - IBS and LBR. The former supplies samples of Instruciton Based Sampling and the latter outputs samples last branch record (LBR).
 
-2) kerne/common:
-membalancer_kernel.c : Major file for the kernel eBPF kernel module.
-memstats_kern.c : Housekeeping/statistics for memory migration
-processtats_kern.c: Counters for process migration
-heap_kern.c: Heap/dynamic memory allocation primitives
+To know more details, lauch the executable profiler with -h option.
 
-3) User space
-1) membalancer_user.c : CLI/user space code for extracting the statistics collected in the kernel, worker threads for implementing memory migrations.
-2) membalancer_tier.c   - Backend code for memory tiering.
-3) membalancer_numa.c   - Backend code for NUMA migrations
-4) membalancer_tracer.c - Backend code for access tracer
-5) membalancer_migrate.c - Backend code for process/thread migrations
-6) memstats_user.c    - Code for collecting memory statistics
-7) iprofiler.c        - IBS-based code/data profiler
+Source Code Organization:
+1) Kernel layer
+Kernel functions are divided into architecture dependent and independent functions. The resource optimizer currently supports only architecture - AMD x86.  The source code is organized under kernel/arch/x86/amd where the architecture specific telemetric functions of IBS and LBR are implemented. The architecture neutral code in the kernel is located under kernel/common which are integrated with eBPF to support user space applications.
 
-Scripts:
-1) run.sh - To run the tool in NUMA mode. Whether to balance or just report access pattern is deteremined by the optional second arugment. The first argument is the parent process id (ppid). It generates a single page output.
+2) Header files
+Header files contains structures or functions to be shared between kernel and/or application layers. The headers files can be of architecture neutral or specific. The header files are located under include/arch and include/common
 
-2) run_c.sh - Same as the run.sh. However, it generates continuous multi-page outout.
-
-3) runt.sh -  To run the tool in tiering mode. The script accepts the parent process id (ppid) as the first argument and an optional second argument. If the second argument is missing then the script runs the tool in reporter mode. The script generates its output in a single page
-
-4) runt_c.sh - The continuous, multi-page equivalent of runt.sh.
-
-5) run_memory_balancer.sh  - To migrate memory for given PID or PPID
-
-6) run_memory_profiler.sh  - To output memory access patterns without migrations
-
-7) run_numa_tier.sh        - For NUMA-based generic tier
-
-8) run_process_profiler.sh - To output memory access patterns for evaluating thread/process migrations
-
-9) run_process_balancer.sh - To perform thread/process migrations
+3) Application layer
+As of now the application layer has two applications. The memory balancer and simple profiler. The memory balancer and profiler codes are placed under membalancer and profiler directories respectively.
 
 
 Build Information:

@@ -1,7 +1,7 @@
 /*
  * membalancer_utils.c - placeholder for helper routines.
  *
- * Copyright (c) 2023 Advanced Micro Devices, Inc. All Rights Reserved.
+ * Copyright (c) 2023-2024 Advanced Micro Devices, Inc. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
