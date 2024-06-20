@@ -1,0 +1,11 @@
+===========================
+OPEN SOURCE SOFTWARE NOTICE
+===========================
+
+resource-optimizer userspace code includes software developed by
+the following (BSD 2-clause)
+
+Copyright (C) 2023-2024 Advanced Micro Devices, Inc
+
+
+resource-optimizer Linux kernel bpf drivers include software from Linux kernel (GPL 2.0)
